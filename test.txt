@@ -129,3 +129,20 @@ python main.py scan --input endpoints.json --tests sqli,xss,idor
 apisec discovery --url http://localhost:3000 --wordlist wordlists/api.txt
 apisec scan --input endpoints.json --tests all
 apisec params --url http://localhost:3000 --input endpoints.json
+
+# Clone ou copie ton projet sur Kali
+cd /home/kali/api_audit_tool
+
+# Crée un venv
+python3 -m venv venv
+source venv/bin/activate
+
+# Installe les dépendances
+pip install -r requirements.txt
+
+# Installe l'outil
+pip install -e .
+
+# Lance
+apisec --help
+apisec discovery --url http://localhost:5000 --wordlist wordlists/common-rest.txt
