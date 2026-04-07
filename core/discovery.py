@@ -1,14 +1,13 @@
 # core/discovery.py
 """
-APIDiscovery — Détection et crawling d'APIs (REST | GraphQL | SOAP | Unknown)
+APIDiscovery — API detection and crawling (REST | GraphQL | SOAP | Unknown)
 
-Phase 1 : Détection du type d'API via système de scoring
-Phase 2 : Crawling des endpoints (wordlist + Swagger/OpenAPI + WSDL)
+Phase 1 : API type detection via scoring system
+Phase 2 : Endpoint crawling (wordlist + Swagger/OpenAPI + WSDL)
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -17,7 +16,7 @@ from logger.logger import logger
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Constantes — chemins de détection
+#  Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
 GRAPHQL_PATHS: list[str] = [
@@ -26,32 +25,35 @@ GRAPHQL_PATHS: list[str] = [
 ]
 
 SWAGGER_PATHS: list[str] = [
-    "/swagger.json",          "/swagger/v1/swagger.json",
-    "/openapi.json",          "/api/openapi.json",
-    "/api-docs",              "/api/docs",
-    "/v1/swagger.json",       "/v2/swagger.json",
-    "/v3/api-docs",           "/docs/openapi.json",
+    "/swagger.json",        "/swagger/v1/swagger.json",
+    "/openapi.json",        "/api/openapi.json",
+    "/api-docs",            "/api/docs",
+    "/v1/swagger.json",     "/v2/swagger.json",
+    "/v3/api-docs",         "/docs/openapi.json",
 ]
 
 WSDL_PATHS: list[str] = [
-    "/?wsdl",        "/service?wsdl",  "/api?wsdl",
-    "/ws?wsdl",      "/soap?wsdl",     "/webservice?wsdl",
-    "/soap",         "/ws",            "/webservice",
-    "/service",      "/RPC",           "/endpoint",
+    "/?wsdl",       "/service?wsdl", "/api?wsdl",
+    "/ws?wsdl",     "/soap?wsdl",    "/webservice?wsdl",
+    "/soap",        "/ws",           "/webservice",
+    "/service",     "/RPC",          "/endpoint",
 ]
 
+# Versioned API paths — universal signals for REST detection
 REST_VERSION_PATHS: list[str] = [
     "/api", "/api/v1", "/api/v2", "/api/v3",
     "/v1",  "/v2",     "/v3",
 ]
 
+# Common REST resource paths — universal, not app-specific
+# These are tested only during scoring, not during crawl
 COMMON_REST_PATHS: list[str] = [
-    "/users",    "/posts",     "/products", "/items",
-    "/todos",    "/comments",  "/articles", "/orders",
-    "/accounts", "/auth",      "/health",   "/status",
+    "/users",    "/posts",    "/products", "/items",
+    "/todos",    "/comments", "/articles", "/orders",
+    "/accounts", "/auth",     "/health",   "/status",
 ]
 
-# Enveloppe SOAP minimale pour test de détection
+# Minimal SOAP envelope for detection probe
 _SOAP_PROBE = (
     '<?xml version="1.0" encoding="utf-8"?>'
     '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
@@ -60,7 +62,7 @@ _SOAP_PROBE = (
 )
 _SOAP_HEADERS = {"Content-Type": "text/xml; charset=utf-8"}
 
-# Seuils de scoring
+# Scoring thresholds
 _GQL_THRESHOLD  = 4
 _GQL_MAX_SCORE  = 9
 _REST_THRESHOLD = 2
@@ -75,10 +77,10 @@ _SOAP_MAX_SCORE = 7
 
 @dataclass
 class DetectionResult:
-    """Résultat structuré de la détection du type d'API."""
+    """Structured result from API type detection."""
 
-    api_type:   str              # "REST" | "GraphQL" | "SOAP" | "Unknown"
-    confidence: float            # 0.0 – 1.0
+    api_type:   str
+    confidence: float
     score:      int
     reasons:    list[str] = field(default_factory=list)
 
@@ -104,9 +106,9 @@ class DetectionResult:
 
 class APIDiscovery:
     """
-    Détecte le type d'une API distante et crawle ses endpoints.
+    Detects the type of a remote API and crawls its endpoints.
 
-    Utilisation :
+    Usage:
         discovery = APIDiscovery("https://api.example.com")
         result    = discovery.run("wordlist.txt", mode="quick")
         print(result)
@@ -117,35 +119,30 @@ class APIDiscovery:
         self.http      = Requester(self.base_url, timeout=timeout)
         self.api_type  = "Unknown"
 
-        # Résultats accumulés
         self.tech_stack:        list[str] = []
         self.endpoints:         list[str] = []
         self.swagger_endpoints: list[str] = []
 
     # =========================================================================
-    #  Helpers internes
+    #  Internal helpers
     # =========================================================================
 
     def _is_real_html(self, r) -> bool:
-        """
-        True seulement si la réponse est vraiment du HTML pur.
-        Évite de pénaliser une API REST dont le Content-Type est mal configuré.
-        """
+        """True only if response is genuine HTML — avoids penalizing APIs with wrong Content-Type."""
         ct = r.headers.get("Content-Type", "")
         if "html" not in ct and "xml" not in ct:
             return False
         try:
             r.json()
-            return False   # JSON valide malgré le mauvais Content-Type
+            return False   # valid JSON despite wrong Content-Type
         except Exception:
-            return True    # Vraiment du HTML/XML
+            return True
 
     def _contains_xml(self, r) -> bool:
-        """True si la réponse contient du XML (détection SOAP)."""
+        """True if response contains XML (SOAP detection)."""
         ct = r.headers.get("Content-Type", "")
         if "xml" in ct or "soap" in ct:
             return True
-        # Vérification légère du corps
         try:
             text = r.text[:200]
             return "<?xml" in text or "<soap:" in text or "<wsdl:" in text
@@ -154,34 +151,32 @@ class APIDiscovery:
 
     @staticmethod
     def _safe_json(r) -> Optional[dict | list]:
-        """Parse JSON sans lever d'exception."""
+        """Parse JSON without raising exceptions."""
         try:
             return r.json()
         except Exception:
             return None
 
     # =========================================================================
-    #  PHASE 1 — Scoring SOAP
+    #  PHASE 1 — SOAP scoring
     # =========================================================================
 
     def _score_soap(self) -> tuple[int, list[str]]:
         score:   int       = 0
         reasons: list[str] = []
 
-        # Signal 1 : WSDL
         for path in WSDL_PATHS:
             r = self.http.get(path)
             if r is None or r.status_code != 200:
                 continue
 
-            ct  = r.headers.get("Content-Type", "").lower()
+            ct           = r.headers.get("Content-Type", "").lower()
             has_xml_ct   = any(t in ct for t in ("xml", "wsdl", "soap"))
             has_xml_body = self._contains_xml(r)
 
             if not (has_xml_ct or has_xml_body):
                 continue
 
-            # Tente de lire le corps pour confirmer
             try:
                 text = r.content.decode("utf-8", errors="ignore").lower()
             except Exception:
@@ -192,68 +187,50 @@ class APIDiscovery:
                 "binding", "soap", "targetnamespace",
                 "webservice", "operation",
             )
-
             matched = [k for k in WSDL_KEYWORDS if k in text]
 
             if len(matched) >= 2:
-                # Confirmation forte — plusieurs mots-clés WSDL trouvés
                 score += 4
-                reasons.append(f"WSDL confirmé sur {path} ({', '.join(matched[:3])})")
-                return score, reasons   # certitude maximale
+                reasons.append(f"WSDL confirmed on {path} ({', '.join(matched[:3])})")
+                return score, reasons
 
             elif len(matched) == 1:
-                # Confirmation partielle
                 score += 3
-                reasons.append(f"WSDL probable sur {path} ({matched[0]})")
+                reasons.append(f"WSDL probable on {path} ({matched[0]})")
                 return score, reasons
 
             elif has_xml_ct:
-                # XML dans Content-Type mais pas de mots-clés WSDL
                 score += 2
-                reasons.append(f"XML Content-Type sur {path}")
+                reasons.append(f"XML Content-Type on {path}")
 
             elif has_xml_body:
-                # XML détecté dans le corps seulement
                 score += 2
-                reasons.append(f"XML détecté dans le corps sur {path}")
+                reasons.append(f"XML body detected on {path}")
 
-        # Signal 2 : POST avec enveloppe SOAP
         for path in ["/soap", "/ws", "/service", "/api", "/endpoint", "/"]:
             r = self.http.post(path, data=_SOAP_PROBE, headers=_SOAP_HEADERS)
             if r is None:
                 continue
-
             if self._contains_xml(r):
                 score += 3
-                reasons.append(f"Réponse XML/SOAP sur POST {path}")
+                reasons.append(f"XML/SOAP response on POST {path}")
                 break
-
             if "SOAPAction" in r.headers:
                 score += 2
-                reasons.append(f"Header SOAPAction présent sur {path}")
+                reasons.append(f"SOAPAction header on {path}")
                 break
+
         return score, reasons
-    
 
     # =========================================================================
-    #  PHASE 1 — Scoring GraphQL
+    #  PHASE 1 — GraphQL scoring
     # =========================================================================
 
     def _score_graphql(self) -> tuple[int, list[str]]:
-        """
-        Signaux GraphQL — signaux forts et non ambigus uniquement.
-
-        Règle anti-biais :
-          - 400/422 seul  → ignoré  (toute API REST répond 400 sur /graphql)
-          - data/errors   → compté seulement si status 200
-          - break         → seulement sur introspection __schema confirmée
-        """
         score:   int       = 0
         reasons: list[str] = []
 
         for path in GRAPHQL_PATHS:
-
-            # Signal 1 : POST { __typename } → 200 JSON
             r = self.http.post(path, json={"query": "{ __typename }"})
             if r is None:
                 continue
@@ -262,13 +239,11 @@ class APIDiscovery:
                 score += 3
                 reasons.append(f"POST {path} → 200 JSON")
 
-                # Signal 2 : corps contient "data" ou "errors" (conditionnel au 200)
                 body = self._safe_json(r)
                 if isinstance(body, dict) and ("data" in body or "errors" in body):
                     score += 2
-                    reasons.append(f'Corps "{path}" contient data/errors')
+                    reasons.append(f'Body "{path}" contains data/errors')
 
-            # Signal 3 : introspection __schema (signal le plus fort)
             r_intro = self.http.post(
                 path,
                 json={"query": "{ __schema { queryType { name } } }"},
@@ -280,24 +255,29 @@ class APIDiscovery:
                     and body_intro.get("data", {}).get("__schema")
                 ):
                     score += 4
-                    reasons.append(f"Introspection __schema réussie sur {path}")
-                    return score, reasons   # certitude maximale
+                    reasons.append(f"Introspection __schema succeeded on {path}")
+                    return score, reasons
 
         return score, reasons
 
     # =========================================================================
-    #  PHASE 1 — Scoring REST
+    #  PHASE 1 — REST scoring
+    #
+    #  Design principles:
+    #  - Only universal signals (no app-specific paths)
+    #  - REST_VERSION_PATHS tested in Signal 2 only (no duplication in Signal 3)
+    #  - COMMON_REST_PATHS tested in Signal 3 only
+    #  - SPA detection: HTML on / + JSON on sub-paths → boost score
+    #  - HTML penalty only if zero JSON signals found
     # =========================================================================
 
     def _score_rest(self) -> tuple[int, list[str]]:
-        """
-        Signaux REST progressifs avec malus HTML.
-        """
-        score:          int       = 0
-        reasons:        list[str] = []
-        has_json_signal: bool     = False
+        score:           int  = 0
+        reasons:         list[str] = []
+        has_json_signal: bool = False
+        has_html_root:   bool = False
 
-        # Signal 1 : GET /
+        # Signal 1 — GET /
         r = self.http.get("/")
         if r and r.status_code == 200:
             if Requester.is_json(r):
@@ -307,62 +287,78 @@ class APIDiscovery:
             else:
                 score += 1
                 reasons.append("GET / → 200")
+                if self._is_real_html(r):
+                    # SPA detected — don't penalize yet, check sub-paths first
+                    has_html_root = True
+                    logger.debug("[score_rest] HTML root — likely SPA, checking sub-paths...")
 
             body = self._safe_json(r)
             if isinstance(body, (list, dict)) and "data" not in (body or {}):
                 score += 1
                 has_json_signal = True
-                reasons.append("Corps JSON sans enveloppe GraphQL")
+                reasons.append("JSON body without GraphQL envelope")
 
-        # Signal 2 : endpoints versionnés
+        # Signal 2 — versioned API paths (/api, /v1, /v2...)
+        # These are tested here ONLY — not duplicated in Signal 3
         for path in REST_VERSION_PATHS:
             rv = self.http.get(path)
-            if rv and rv.status_code in (200, 201, 401, 403):
+            if rv is None:
+                continue
+            if rv.status_code in (200, 201) and Requester.is_json(rv):
                 score += 2
+                has_json_signal = True
+                reasons.append(f"GET {path} → {rv.status_code} JSON")
+                break
+            elif rv.status_code in (200, 201, 401, 403):
+                score += 1
                 reasons.append(f"GET {path} → {rv.status_code}")
                 break
 
-        # Signal 3 : endpoints REST courants
+        # Signal 3 — common REST resource paths (/users, /products...)
+        # COMMON_REST_PATHS only — no duplication with REST_VERSION_PATHS
         for path in COMMON_REST_PATHS:
             rv = self.http.get(path)
-            if rv and rv.status_code == 200 and Requester.is_json(rv):
+            if rv is None:
+                continue
+            if rv.status_code in (200, 201) and Requester.is_json(rv):
                 score += 2
                 has_json_signal = True
-                reasons.append(f"GET {path} → 200 JSON")
+                reasons.append(f"GET {path} → {rv.status_code} JSON")
+                break
+            elif rv.status_code in (401, 403) and Requester.is_json(rv):
+                # Auth-protected JSON endpoint = REST API
+                score += 1
+                has_json_signal = True
+                reasons.append(f"GET {path} → {rv.status_code} JSON (auth required)")
                 break
 
-        # Signal 4 : OPTIONS /
+        # Signal 4 — OPTIONS verbs
         ro = self.http.options("/")
         if ro and "Allow" in ro.headers:
             allow = ro.headers["Allow"]
-            # Vérifie que les verbes REST classiques sont présents
             if any(v in allow for v in ("GET", "POST", "PUT", "DELETE")):
                 score += 1
                 reasons.append(f"OPTIONS / → Allow: {allow}")
 
-        # Malus HTML — seulement si AUCUN signal JSON trouvé
-        if not has_json_signal:
+        # SPA boost — root is HTML but found JSON on sub-paths
+        if has_html_root and has_json_signal:
+            score += 2
+            reasons.append("SPA frontend with JSON API on sub-paths")
+
+        # HTML penalty — only if absolutely no JSON signal found
+        if not has_json_signal and not has_html_root:
             r2 = self.http.get("/")
             if r2 and self._is_real_html(r2):
                 score -= 1
-                reasons.append("Contenu HTML pur (malus)")
+                reasons.append("Pure HTML (penalty)")
 
         return score, reasons
 
     # =========================================================================
-    #  PHASE 1 — Décision finale
+    #  PHASE 1 — Final decision
     # =========================================================================
 
     def detect_api_type(self) -> DetectionResult:
-        """
-        Compare les scores SOAP / GraphQL / REST et retourne un DetectionResult.
-
-        Priorité :
-          1. SOAP    : score >= 4
-          2. GraphQL : score >= 4 ET score > rest_score
-          3. REST    : score >= 2
-          4. Unknown : sinon
-        """
         logger.info("[*] Detecting API type...")
 
         soap_score, soap_reasons = self._score_soap()
@@ -407,14 +403,10 @@ class APIDiscovery:
         return result
 
     # =========================================================================
-    #  Détection de la stack technique
+    #  Tech stack detection
     # =========================================================================
 
     def detect_technology(self) -> list[str]:
-        """
-        Lit les headers HTTP pour deviner la stack technique.
-        Retourne la liste des technologies détectées.
-        """
         r = self.http.get("/")
         if not r:
             return []
@@ -424,25 +416,25 @@ class APIDiscovery:
         via        = r.headers.get("Via",           "").lower()
 
         checks = [
-            ("nginx",    "Nginx",              server),
-            ("apache",   "Apache",             server),
-            ("express",  "Node.js (Express)",  server),
-            ("express",  "Node.js (Express)",  powered_by),
-            ("django",   "Django",             server),
-            ("django",   "Django",             powered_by),
-            ("rails",    "Ruby on Rails",      server),
-            ("php",      "PHP",                powered_by),
-            ("laravel",  "Laravel",            powered_by),
-            ("next.js",  "Next.js",            powered_by),
-            ("fastapi",  "FastAPI",            server),
-            ("uvicorn",  "FastAPI/Uvicorn",    server),
-            ("flask",    "Flask",              server),
-            ("gunicorn", "Gunicorn",           server),
-            ("iis",      "IIS (Microsoft)",    server),
-            ("tomcat",   "Apache Tomcat",      server),
-            ("jetty",    "Jetty",              server),
-            ("spring",   "Spring Boot",        powered_by),
-            ("caddy",    "Caddy",              server),
+            ("nginx",     "Nginx",             server),
+            ("apache",    "Apache",            server),
+            ("express",   "Node.js (Express)", server),
+            ("express",   "Node.js (Express)", powered_by),
+            ("django",    "Django",            server),
+            ("django",    "Django",            powered_by),
+            ("rails",     "Ruby on Rails",     server),
+            ("php",       "PHP",               powered_by),
+            ("laravel",   "Laravel",           powered_by),
+            ("next.js",   "Next.js",           powered_by),
+            ("fastapi",   "FastAPI",           server),
+            ("uvicorn",   "FastAPI/Uvicorn",   server),
+            ("flask",     "Flask",             server),
+            ("gunicorn",  "Gunicorn",          server),
+            ("iis",       "IIS (Microsoft)",   server),
+            ("tomcat",    "Apache Tomcat",     server),
+            ("jetty",     "Jetty",             server),
+            ("spring",    "Spring Boot",       powered_by),
+            ("caddy",     "Caddy",             server),
             ("cloudflare","Cloudflare",        via),
         ]
 
@@ -455,14 +447,10 @@ class APIDiscovery:
         return self.tech_stack
 
     # =========================================================================
-    #  PHASE 2 — Swagger / OpenAPI
+    #  PHASE 2 — Swagger / OpenAPI parsing
     # =========================================================================
 
     def parse_swagger(self) -> list[str]:
-        """
-        Cherche un fichier Swagger/OpenAPI et extrait tous les endpoints.
-        Retourne une liste d'URLs complètes.
-        """
         found: list[str] = []
 
         for path in SWAGGER_PATHS:
@@ -478,15 +466,13 @@ class APIDiscovery:
             if not paths:
                 continue
 
-            logger.info(f"[+] Swagger/OpenAPI trouvé sur {path} — {len(paths)} paths")
+            logger.info(f"[+] Swagger/OpenAPI found on {path} — {len(paths)} paths")
 
-            # Support OpenAPI 2.x (basePath) et 3.x (servers)
             base = spec.get("basePath", "")
             if not base:
                 servers = spec.get("servers", [])
                 if servers:
                     server_url = servers[0].get("url", "")
-                    # Garde uniquement le path si l'URL est absolue
                     if server_url.startswith("http"):
                         from urllib.parse import urlparse
                         base = urlparse(server_url).path.rstrip("/")
@@ -499,13 +485,17 @@ class APIDiscovery:
                     found.append(full_url)
                     logger.debug(f"    [swagger] {full_url}")
 
-            break   # spec valide trouvé → inutile de continuer
+            break
 
         self.swagger_endpoints = found
         return found
 
     # =========================================================================
-    #  PHASE 2 — Crawling wordlist
+    #  PHASE 2 — Wordlist crawling
+    #
+    #  Key fix: SPA-aware filtering
+    #  - If root returns HTML (SPA), JSON responses on sub-paths are ALWAYS kept
+    #  - This handles crAPI, Juice Shop, DVWA and any modern SPA + REST API combo
     # =========================================================================
 
     def crawl_endpoints(
@@ -513,27 +503,16 @@ class APIDiscovery:
         wordlist_path: str,
         limit: Optional[int] = None,
     ) -> list[str]:
-        """
-        Teste chaque chemin de la wordlist par GET.
-        Filtre les faux positifs : catch-all, redirects auth, HTML pur, body dupliqué.
-
-        Args:
-            wordlist_path : chemin vers le fichier de wordlist
-            limit         : nombre maximum de chemins à tester (None = tous)
-
-        Returns:
-            Liste des URLs accessibles (sans faux positifs).
-        """
         import hashlib
 
-        # ── Lecture & déduplication wordlist ─────────────────────────────────
         try:
             with open(wordlist_path, "r", encoding="utf-8", errors="ignore") as f:
                 raw_paths = [line.strip() for line in f if line.strip()]
         except FileNotFoundError:
-            logger.error(f"[crawl] Wordlist introuvable : {wordlist_path}")
+            logger.error(f"[crawl] Wordlist not found: {wordlist_path}")
             return []
 
+        # Deduplicate wordlist
         seen_paths: set[str] = set()
         paths: list[str] = []
         for p in raw_paths:
@@ -544,32 +523,31 @@ class APIDiscovery:
         total = len(paths) if limit is None else min(limit, len(paths))
         logger.info(f"[*] Crawling {total} paths...")
 
-        # ── Baseline catch-all ────────────────────────────────────────────────
-        # Teste un chemin aléatoire pour fingerprinter la réponse "inexistante"
-        # Si le serveur retourne 200 sur n'importe quoi → on filtre par comparaison
+        # Baseline fingerprint for catch-all detection
         baseline = self._get_baseline()
         if baseline.get("status") == 200:
-            logger.warning("[crawl] Serveur catch-all détecté — filtrage renforcé activé")
+            logger.warning("[crawl] Catch-all server detected — enhanced filtering enabled")
 
-        # ── État interne ──────────────────────────────────────────────────────
-        already_known: set[str] = set(self.endpoints + self.swagger_endpoints)
-        found_this_run: list[str] = []   # endpoints trouvés dans CE crawl uniquement
-        seen_bodies:    set[str] = set() # hashes des bodies déjà vus (déduplication contenu)
+        # SPA detection: if root returns HTML → keep JSON sub-paths
+        root_r       = self.http.get("/")
+        root_is_html = root_r is not None and self._is_real_html(root_r)
+        if root_is_html:
+            logger.info("[*] SPA frontend detected — JSON endpoints on sub-paths will be kept")
+
+        already_known:  set[str] = set(self.endpoints + self.swagger_endpoints)
+        found_this_run: list[str] = []
+        seen_bodies:    set[str] = set()
         count = 0
 
         for path in paths:
             if limit is not None and count >= limit:
                 break
-
             count += 1
 
-            # Normalise le chemin
             if not path.startswith("/"):
                 path = "/" + path
 
             url = self.base_url + path
-
-            # Évite les doublons d'URL
             if url in already_known:
                 continue
 
@@ -577,45 +555,48 @@ class APIDiscovery:
             if r is None:
                 continue
 
-            # ── Filtres faux positifs ─────────────────────────────────────────
-
-            # Filtre 1 — status >= 400 → pas un endpoint
+            # Filter 1 — HTTP error
             if r.status_code >= 400:
                 continue
 
-            # Filtre 2 — redirect vers page d'auth → faux positif
+            # Filter 2 — auth redirect
             if self._is_redirect_to_auth(r):
                 logger.debug(f"    [FP-redirect] {path}")
                 continue
 
-            # Filtre 3 — catch-all / même fingerprint que la baseline 404
-            if self._is_false_positive(r, baseline):
+            content_type = r.headers.get("Content-Type", "")
+
+            # Filter 3 — catch-all / baseline fingerprint
+            # Exception: SPA root is HTML but sub-path returns JSON → always keep
+            if root_is_html and "application/json" in content_type:
+                pass  # SPA + JSON API → never filter
+            elif self._is_false_positive(r, baseline):
                 logger.debug(f"    [FP-baseline] {path}")
                 continue
 
-            # Filtre 4 — HTML pur (frontend SPA servi sur /api/*)
-            if self._is_html_frontend(r):
+            # Filter 4 — pure HTML frontend page
+            # Skip this filter if root is already HTML (SPA)
+            if not root_is_html and self._is_html_frontend(r):
                 logger.debug(f"    [FP-html] {path}")
                 continue
 
-            # Filtre 5 — body identique à un endpoint déjà trouvé
+            # Filter 5 — duplicate body
             body_hash = hashlib.md5(r.content).hexdigest()
             if body_hash in seen_bodies:
                 logger.debug(f"    [FP-duplicate-body] {path}")
                 continue
 
-            # ── Endpoint confirmé ─────────────────────────────────────────────
+            # Endpoint confirmed
             seen_bodies.add(body_hash)
             already_known.add(url)
             found_this_run.append(url)
             self.endpoints.append(url)
             logger.info(f"    [crawl] {r.status_code} → {url}")
 
-        logger.info(f"[+] Crawl terminé — {len(found_this_run)} nouveaux endpoints trouvés")
+        logger.info(f"[+] Crawl complete — {len(found_this_run)} new endpoints found")
         return self.endpoints
 
-
-    # ── Helpers appelés par crawl_endpoints ───────────────────────────────────────
+    # ── Crawl helpers ─────────────────────────────────────────────────────────
 
     def _get_baseline(self) -> dict:
         import hashlib, uuid
@@ -623,7 +604,6 @@ class APIDiscovery:
         r = self.http.get(fake_path, allow_redirects=False)
         if r is None:
             return {}
-
         return {
             "status":         r.status_code,
             "body_hash":      hashlib.md5(r.content).hexdigest(),
@@ -631,7 +611,6 @@ class APIDiscovery:
             "content_type":   r.headers.get("Content-Type", ""),
             "is_html":        "text/html" in r.headers.get("Content-Type", ""),
         }
-
 
     def _is_false_positive(self, r, baseline: dict) -> bool:
         import hashlib
@@ -642,37 +621,28 @@ class APIDiscovery:
         content_length = len(r.content)
         content_type   = r.headers.get("Content-Type", "")
 
-        # Si la baseline est du HTML (SPA) ET que la réponse est du JSON → garder
-        if baseline.get("is_html") and "application/json" in content_type:
+        # JSON response → never a false positive
+        if "application/json" in content_type:
             return False
 
-        # Si la baseline est du HTML ET que la réponse est aussi du HTML → FP
-        if baseline.get("is_html") and "text/html" in content_type:
-            return True
-
-        # Même hash exact → FP
+        # Same exact hash as baseline → FP
         if body_hash == baseline.get("body_hash"):
             return True
 
-        # Même taille → FP probable
+        # Same size as baseline → FP probable
         if content_length == baseline.get("content_length") and content_length > 0:
             return True
 
-        # Body trop court
+        # Too short to be meaningful
         if content_length < 10:
             return True
 
         return False
 
     def _is_redirect_to_auth(self, r) -> bool:
-        """
-        True si la réponse est une redirection vers une page d'authentification.
-        Un redirect vers /login n'est pas un endpoint API accessible.
-        """
         if r.status_code not in (301, 302, 303, 307, 308):
             return False
-
-        location = r.headers.get("Location", "").lower()
+        location     = r.headers.get("Location", "").lower()
         auth_patterns = ["/login", "/signin", "/auth", "/connect", "/sso", "/oauth"]
         return any(p in location for p in auth_patterns)
 
@@ -682,47 +652,62 @@ class APIDiscovery:
             return False
         try:
             r.json()
-            return False  # JSON valide → garder
+            return False  # valid JSON → keep
         except Exception:
             return True
 
     # =========================================================================
-    #  run() — Orchestrateur principal
+    #  run() — Main orchestrator
     # =========================================================================
 
     def run(self, wordlist_path: str, mode: str = "quick") -> dict:
         """
-        Lance la découverte complète dans l'ordre :
-          1. detect_api_type()    — REST | GraphQL | SOAP | Unknown
-          2. detect_technology()  — stack technique via headers
-          3. parse_swagger()      — endpoints Swagger/OpenAPI
-          4. crawl_endpoints()    — wordlist
+        Runs full discovery in order:
+          1. detect_api_type()   — REST | GraphQL | SOAP | Unknown
+          2. detect_technology() — tech stack from headers
+          3. parse_swagger()     — Swagger/OpenAPI endpoints
+          4. crawl_endpoints()   — wordlist crawling
 
         Args:
-            wordlist_path : chemin vers la wordlist
-            mode          : "quick" (50 paths) | "full" (wordlist complète)
+            wordlist_path : path to wordlist file
+            mode          : "quick" (50 paths) | "full" (complete wordlist)
 
         Returns:
-            dict avec tous les résultats.
+            dict with all results.
         """
         logger.info(f"[*] Starting discovery on {self.base_url}")
 
-        # 1. Type d'API
+        # 1. API type
         detection = self.detect_api_type()
 
-        # 2. Stack technique
+        # 2. Tech stack
         self.detect_technology()
         if self.tech_stack:
-            logger.info(f"[+] Tech stack : {', '.join(self.tech_stack)}")
+            logger.info(f"[+] Tech stack: {', '.join(self.tech_stack)}")
 
-        # 3. Swagger / OpenAPI
+        # 3. Swagger
         swagger_found = self.parse_swagger()
 
-        # 4. Crawl wordlist
+        # 4. Crawl
         limit = 50 if mode == "quick" else None
         self.crawl_endpoints(wordlist_path, limit=limit)
 
-        # Fusion sans doublons : swagger en premier
+        # Fix: if scoring said Unknown but crawl found JSON endpoints → upgrade to REST
+        # This handles SPAs and apps where root returns HTML but APIs are on sub-paths
+        if detection.api_type == "Unknown" and len(self.endpoints) > 0:
+            logger.info(
+                f"[*] API type upgraded to REST — "
+                f"{len(self.endpoints)} JSON endpoint(s) found during crawl"
+            )
+            detection.api_type   = "REST"
+            detection.confidence = 0.5
+            detection.score      = max(detection.score, 2)
+            detection.reasons.append(
+                f"REST confirmed from {len(self.endpoints)} crawled endpoint(s)"
+            )
+            self.api_type = "REST"
+
+        # Merge without duplicates — swagger first
         all_endpoints = list(dict.fromkeys(swagger_found + self.endpoints))
 
         return {
@@ -734,4 +719,5 @@ class APIDiscovery:
             "endpoints":         all_endpoints,
             "swagger_endpoints": swagger_found,
             "crawled_endpoints": self.endpoints,
+            "target_url":        self.base_url,
         }
