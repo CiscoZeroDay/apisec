@@ -8,12 +8,14 @@ Phase 2 : Endpoint crawling (wordlist + Swagger/OpenAPI + WSDL)
 
 from __future__ import annotations
 
+import hashlib
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 from core.requester import Requester
 from logger.logger import logger
-import hashlib
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,7 +49,7 @@ REST_VERSION_PATHS: list[str] = [
 ]
 
 # Common REST resource paths — universal, not app-specific
-# These are tested only during scoring, not during crawl
+# Tested only during scoring, not during crawl
 COMMON_REST_PATHS: list[str] = [
     "/users",    "/posts",    "/products", "/items",
     "/todos",    "/comments", "/articles", "/orders",
@@ -129,13 +131,13 @@ class APIDiscovery:
     # =========================================================================
 
     def _is_real_html(self, r) -> bool:
-        """True only if response is genuine HTML — avoids penalizing APIs with wrong Content-Type."""
+        """True only if response is genuine HTML."""
         ct = r.headers.get("Content-Type", "")
         if "html" not in ct and "xml" not in ct:
             return False
         try:
             r.json()
-            return False   # valid JSON despite wrong Content-Type
+            return False  # valid JSON despite wrong Content-Type
         except Exception:
             return True
 
@@ -273,10 +275,10 @@ class APIDiscovery:
     # =========================================================================
 
     def _score_rest(self) -> tuple[int, list[str]]:
-        score:           int  = 0
+        score:           int       = 0
         reasons:         list[str] = []
-        has_json_signal: bool = False
-        has_html_root:   bool = False
+        has_json_signal: bool      = False
+        has_html_root:   bool      = False
 
         # Signal 1 — GET /
         r = self.http.get("/")
@@ -289,7 +291,6 @@ class APIDiscovery:
                 score += 1
                 reasons.append("GET / → 200")
                 if self._is_real_html(r):
-                    # SPA detected — don't penalize yet, check sub-paths first
                     has_html_root = True
                     logger.debug("[score_rest] HTML root — likely SPA, checking sub-paths...")
 
@@ -300,7 +301,7 @@ class APIDiscovery:
                 reasons.append("JSON body without GraphQL envelope")
 
         # Signal 2 — versioned API paths (/api, /v1, /v2...)
-        # These are tested here ONLY — not duplicated in Signal 3
+        # Tested here ONLY — not duplicated in Signal 3
         for path in REST_VERSION_PATHS:
             rv = self.http.get(path)
             if rv is None:
@@ -327,7 +328,6 @@ class APIDiscovery:
                 reasons.append(f"GET {path} → {rv.status_code} JSON")
                 break
             elif rv.status_code in (401, 403) and Requester.is_json(rv):
-                # Auth-protected JSON endpoint = REST API
                 score += 1
                 has_json_signal = True
                 reasons.append(f"GET {path} → {rv.status_code} JSON (auth required)")
@@ -417,26 +417,26 @@ class APIDiscovery:
         via        = r.headers.get("Via",           "").lower()
 
         checks = [
-            ("nginx",     "Nginx",             server),
-            ("apache",    "Apache",            server),
-            ("express",   "Node.js (Express)", server),
-            ("express",   "Node.js (Express)", powered_by),
-            ("django",    "Django",            server),
-            ("django",    "Django",            powered_by),
-            ("rails",     "Ruby on Rails",     server),
-            ("php",       "PHP",               powered_by),
-            ("laravel",   "Laravel",           powered_by),
-            ("next.js",   "Next.js",           powered_by),
-            ("fastapi",   "FastAPI",           server),
-            ("uvicorn",   "FastAPI/Uvicorn",   server),
-            ("flask",     "Flask",             server),
-            ("gunicorn",  "Gunicorn",          server),
-            ("iis",       "IIS (Microsoft)",   server),
-            ("tomcat",    "Apache Tomcat",     server),
-            ("jetty",     "Jetty",             server),
-            ("spring",    "Spring Boot",       powered_by),
-            ("caddy",     "Caddy",             server),
-            ("cloudflare","Cloudflare",        via),
+            ("nginx",      "Nginx",             server),
+            ("apache",     "Apache",            server),
+            ("express",    "Node.js (Express)", server),
+            ("express",    "Node.js (Express)", powered_by),
+            ("django",     "Django",            server),
+            ("django",     "Django",            powered_by),
+            ("rails",      "Ruby on Rails",     server),
+            ("php",        "PHP",               powered_by),
+            ("laravel",    "Laravel",           powered_by),
+            ("next.js",    "Next.js",           powered_by),
+            ("fastapi",    "FastAPI",           server),
+            ("uvicorn",    "FastAPI/Uvicorn",   server),
+            ("flask",      "Flask",             server),
+            ("gunicorn",   "Gunicorn",          server),
+            ("iis",        "IIS (Microsoft)",   server),
+            ("tomcat",     "Apache Tomcat",     server),
+            ("jetty",      "Jetty",             server),
+            ("spring",     "Spring Boot",       powered_by),
+            ("caddy",      "Caddy",             server),
+            ("cloudflare", "Cloudflare",        via),
         ]
 
         seen: set[str] = set()
@@ -475,7 +475,6 @@ class APIDiscovery:
                 if servers:
                     server_url = servers[0].get("url", "")
                     if server_url.startswith("http"):
-                        from urllib.parse import urlparse
                         base = urlparse(server_url).path.rstrip("/")
                     else:
                         base = server_url.rstrip("/")
@@ -494,17 +493,17 @@ class APIDiscovery:
     # =========================================================================
     #  PHASE 2 — Wordlist crawling
     #
-    #  Key fix: SPA-aware filtering
+    #  SPA-aware filtering:
     #  - If root returns HTML (SPA), JSON responses on sub-paths are ALWAYS kept
-    #  - This handles crAPI, Juice Shop, DVWA and any modern SPA + REST API combo
+    #  - 401/403 on JSON endpoints = protected API endpoint → kept
+    #  - This handles crAPI, Juice Shop, DVWA and any modern SPA + REST API
     # =========================================================================
 
-        def crawl_endpoints(
+    def crawl_endpoints(
         self,
         wordlist_path: str,
         limit: Optional[int] = None,
-        ) -> list[str]:
-        
+    ) -> list[str]:
 
         try:
             with open(wordlist_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -561,10 +560,9 @@ class APIDiscovery:
             # Filter 1 — HTTP errors
             # Keep 401/403 — they indicate real protected endpoints
             if r.status_code in (401, 403):
-                # Only keep if JSON response or SPA app
                 if "application/json" not in content_type and not root_is_html:
                     continue
-                # 401/403 confirmed API endpoint — skip remaining filters
+                # Protected API endpoint confirmed
                 already_known.add(url)
                 found_this_run.append(url)
                 self.endpoints.append(url)
@@ -572,7 +570,6 @@ class APIDiscovery:
                 continue
 
             elif r.status_code >= 400:
-                # All other 4xx/5xx → skip
                 continue
 
             # Filter 2 — auth redirect
@@ -581,7 +578,7 @@ class APIDiscovery:
                 continue
 
             # Filter 3 — catch-all / baseline fingerprint
-            # Exception: SPA root is HTML but sub-path returns JSON → always keep
+            # Exception: SPA root is HTML + sub-path returns JSON → always keep
             if root_is_html and "application/json" in content_type:
                 pass  # SPA + JSON API → never filter
             elif self._is_false_positive(r, baseline):
@@ -589,7 +586,7 @@ class APIDiscovery:
                 continue
 
             # Filter 4 — pure HTML frontend page
-            # Skip this filter if root is already HTML (SPA)
+            # Skip if root is already HTML (SPA)
             if not root_is_html and self._is_html_frontend(r):
                 logger.debug(f"    [FP-html] {path}")
                 continue
@@ -613,7 +610,6 @@ class APIDiscovery:
     # ── Crawl helpers ─────────────────────────────────────────────────────────
 
     def _get_baseline(self) -> dict:
-        import hashlib, uuid
         fake_path = f"/xXx{uuid.uuid4().hex[:8]}xXx"
         r = self.http.get(fake_path, allow_redirects=False)
         if r is None:
@@ -627,7 +623,6 @@ class APIDiscovery:
         }
 
     def _is_false_positive(self, r, baseline: dict) -> bool:
-        import hashlib
         if not baseline:
             return False
 
@@ -656,7 +651,7 @@ class APIDiscovery:
     def _is_redirect_to_auth(self, r) -> bool:
         if r.status_code not in (301, 302, 303, 307, 308):
             return False
-        location     = r.headers.get("Location", "").lower()
+        location      = r.headers.get("Location", "").lower()
         auth_patterns = ["/login", "/signin", "/auth", "/connect", "/sso", "/oauth"]
         return any(p in location for p in auth_patterns)
 
@@ -706,12 +701,12 @@ class APIDiscovery:
         limit = 50 if mode == "quick" else None
         self.crawl_endpoints(wordlist_path, limit=limit)
 
-        # Fix: if scoring said Unknown but crawl found JSON endpoints → upgrade to REST
-        # This handles SPAs and apps where root returns HTML but APIs are on sub-paths
+        # Upgrade Unknown → REST if crawl found JSON endpoints
+        # Handles SPAs where root returns HTML but APIs are on sub-paths
         if detection.api_type == "Unknown" and len(self.endpoints) > 0:
             logger.info(
                 f"[*] API type upgraded to REST — "
-                f"{len(self.endpoints)} JSON endpoint(s) found during crawl"
+                f"{len(self.endpoints)} endpoint(s) found during crawl"
             )
             detection.api_type   = "REST"
             detection.confidence = 0.5
