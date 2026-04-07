@@ -13,6 +13,7 @@ from typing import Optional
 
 from core.requester import Requester
 from logger.logger import logger
+import hashlib
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -498,12 +499,12 @@ class APIDiscovery:
     #  - This handles crAPI, Juice Shop, DVWA and any modern SPA + REST API combo
     # =========================================================================
 
-    def crawl_endpoints(
+        def crawl_endpoints(
         self,
         wordlist_path: str,
         limit: Optional[int] = None,
-    ) -> list[str]:
-        import hashlib
+        ) -> list[str]:
+        
 
         try:
             with open(wordlist_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -555,16 +556,29 @@ class APIDiscovery:
             if r is None:
                 continue
 
-            # Filter 1 — HTTP error
-            if r.status_code >= 400:
+            content_type = r.headers.get("Content-Type", "")
+
+            # Filter 1 — HTTP errors
+            # Keep 401/403 — they indicate real protected endpoints
+            if r.status_code in (401, 403):
+                # Only keep if JSON response or SPA app
+                if "application/json" not in content_type and not root_is_html:
+                    continue
+                # 401/403 confirmed API endpoint — skip remaining filters
+                already_known.add(url)
+                found_this_run.append(url)
+                self.endpoints.append(url)
+                logger.info(f"    [crawl] {r.status_code} → {url}")
+                continue
+
+            elif r.status_code >= 400:
+                # All other 4xx/5xx → skip
                 continue
 
             # Filter 2 — auth redirect
             if self._is_redirect_to_auth(r):
                 logger.debug(f"    [FP-redirect] {path}")
                 continue
-
-            content_type = r.headers.get("Content-Type", "")
 
             # Filter 3 — catch-all / baseline fingerprint
             # Exception: SPA root is HTML but sub-path returns JSON → always keep
