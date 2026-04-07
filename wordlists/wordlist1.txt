@@ -1,0 +1,369 @@
+# ─────────────────────────────────────────────────────────────
+#  RACINE & SANTÉ
+# ─────────────────────────────────────────────────────────────
+health
+status
+ping
+ready
+alive
+metrics
+version
+info
+api
+api/v1
+api/v2
+api/v3
+rest
+rest/v1
+rest/v2
+
+# ─────────────────────────────────────────────────────────────
+#  AUTH & SESSION
+# ─────────────────────────────────────────────────────────────
+api/auth/login
+api/auth/logout
+api/auth/signup
+api/auth/register
+api/auth/refresh
+api/auth/token
+api/auth/forgot-password
+api/auth/reset-password
+api/auth/verify
+api/auth/me
+api/login
+api/logout
+api/register
+api/signup
+api/token
+api/token/refresh
+api/session
+auth/login
+auth/logout
+auth/signup
+auth/register
+auth/refresh
+auth/token
+auth/forgot-password
+auth/reset-password
+auth/verify
+auth/me
+login
+logout
+register
+signup
+token
+session
+oauth/token
+oauth/authorize
+oauth/callback
+sso/login
+sso/callback
+
+# ─────────────────────────────────────────────────────────────
+#  UTILISATEURS
+# ─────────────────────────────────────────────────────────────
+api/users
+api/users/me
+api/users/profile
+api/users/1
+api/users/search
+api/users/list
+api/v1/users
+api/v1/users/me
+api/v1/users/profile
+api/v1/users/1
+api/v2/users
+api/v2/users/me
+users
+users/me
+users/profile
+users/1
+users/search
+user
+user/me
+user/profile
+user/dashboard
+user/settings
+profile
+me
+account
+accounts
+account/settings
+account/profile
+members
+members/1
+admin/users
+admin/users/1
+
+# ─────────────────────────────────────────────────────────────
+#  PRODUITS & CATALOGUE
+# ─────────────────────────────────────────────────────────────
+api/products
+api/products/1
+api/v1/products
+api/v2/products
+products
+products/1
+items
+items/1
+catalog
+catalog/products
+shop/products
+shop/items
+store/products
+inventory
+inventory/items
+
+# ─────────────────────────────────────────────────────────────
+#  COMMANDES & PAIEMENTS
+# ─────────────────────────────────────────────────────────────
+api/orders
+api/orders/1
+api/v1/orders
+orders
+orders/1
+cart
+cart/items
+checkout
+payments
+payments/1
+transactions
+transactions/1
+invoices
+invoices/1
+billing
+subscriptions
+subscriptions/1
+coupons
+coupons/apply
+shop/orders
+shop/orders/all
+shop/cart
+shop/checkout
+
+# ─────────────────────────────────────────────────────────────
+#  POSTS & CONTENU
+# ─────────────────────────────────────────────────────────────
+api/posts
+api/posts/1
+api/v1/posts
+posts
+posts/1
+articles
+articles/1
+comments
+comments/1
+feeds
+feeds/1
+news
+news/1
+content
+content/1
+media
+media/1
+uploads
+files
+files/1
+documents
+documents/1
+community/posts
+community/posts/recent
+
+# ─────────────────────────────────────────────────────────────
+#  RECHERCHE
+# ─────────────────────────────────────────────────────────────
+api/search
+search
+search/users
+search/products
+search/posts
+query
+
+# ─────────────────────────────────────────────────────────────
+#  NOTIFICATIONS & MESSAGES
+# ─────────────────────────────────────────────────────────────
+api/notifications
+notifications
+notifications/1
+messages
+messages/1
+inbox
+inbox/1
+alerts
+alerts/1
+emails
+webhooks
+
+# ─────────────────────────────────────────────────────────────
+#  ADMIN
+# ─────────────────────────────────────────────────────────────
+admin
+admin/dashboard
+admin/users
+admin/users/1
+admin/products
+admin/orders
+admin/settings
+admin/logs
+admin/reports
+dashboard
+dashboard/stats
+management/users
+management/roles
+
+# ─────────────────────────────────────────────────────────────
+#  CONFIGURATION & SETTINGS
+# ─────────────────────────────────────────────────────────────
+api/settings
+settings
+config
+configuration
+preferences
+options
+flags
+features
+
+# ─────────────────────────────────────────────────────────────
+#  GRAPHQL
+# ─────────────────────────────────────────────────────────────
+graphql
+api/graphql
+query
+gql
+graphql/v1
+v1/graphql
+v2/graphql
+
+# ─────────────────────────────────────────────────────────────
+#  SWAGGER & DOCUMENTATION
+# ─────────────────────────────────────────────────────────────
+swagger.json
+swagger/v1/swagger.json
+openapi.json
+api-docs
+api/docs
+api/swagger
+v1/swagger.json
+v2/swagger.json
+v3/api-docs
+docs/openapi.json
+api/openapi.json
+api/api-docs
+api/schema
+schema
+spec
+swagger-ui.html
+redoc
+
+# ─────────────────────────────────────────────────────────────
+#  SOAP & WSDL
+# ─────────────────────────────────────────────────────────────
+?wsdl
+service?wsdl
+api?wsdl
+ws?wsdl
+soap?wsdl
+soap
+ws
+webservice
+service
+wsdl
+RPC
+endpoint
+
+# ─────────────────────────────────────────────────────────────
+#  VÉHICULES (crAPI)
+# ─────────────────────────────────────────────────────────────
+identity/api/auth/login
+identity/api/auth/signup
+identity/api/auth/forget-password
+identity/api/v2/user/dashboard
+identity/api/v2/user/change-email
+identity/api/v2/user/change-password
+identity/api/v2/user/pictures
+identity/api/v2/admin/users
+community/api/v2/community/posts
+community/api/v2/community/posts/recent
+workshop/api/shop/products
+workshop/api/shop/orders
+workshop/api/shop/orders/all
+workshop/api/mechanic
+workshop/api/mechanic/signup
+workshop/api/vehicle/vehicles
+workshop/api/vehicle/add-vehicle
+
+# ─────────────────────────────────────────────────────────────
+#  JUICE SHOP (OWASP)
+# ─────────────────────────────────────────────────────────────
+api/Users
+api/Users/1
+api/Products
+api/Products/1
+api/Challenges
+api/Feedbacks
+api/Complaints
+api/Recycles
+api/SecurityQuestions
+api/Quantitys
+api/BasketItems
+api/Deliverys
+api/Addresss
+api/Cards
+api/WalletBalances
+rest/user/login
+rest/user/whoami
+rest/user/change-password
+rest/products/search
+rest/basket/1
+rest/saveLoginIp
+rest/track-order
+rest/countries-by-difficulty
+rest/chatbot/respond
+rest/image-captcha
+rest/memories
+
+# ─────────────────────────────────────────────────────────────
+#  DIVERS & COMMUNS
+# ─────────────────────────────────────────────────────────────
+api/roles
+api/permissions
+roles
+permissions
+groups
+groups/1
+tags
+tags/1
+categories
+categories/1
+reviews
+reviews/1
+ratings
+ratings/1
+likes
+likes/1
+followers
+following
+friends
+reports
+reports/1
+analytics
+statistics
+stats
+logs
+logs/1
+audit
+audit/logs
+events
+events/1
+activities
+activities/1
+tasks
+tasks/1
+todos
+todos/1
+projects
+projects/1
+teams
+teams/1
+organizations
+organizations/1

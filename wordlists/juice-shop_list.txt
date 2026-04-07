@@ -1,0 +1,16 @@
+/api/Users
+/api/Products
+/api/BasketItems
+/api/Feedbacks
+/api/Complaints
+/api/Recycles
+/api/SecurityQuestions
+/api/SecurityAnswers
+/rest/user/login
+/rest/user/whoami
+/rest/user/change-password
+/rest/products/search
+/rest/basket
+/rest/saveLoginIp
+/rest/admin/application-configuration
+/rest/admin/application-version

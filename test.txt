@@ -1,0 +1,131 @@
+// API REST
+# JSONPlaceholder — REST classique
+python main.py --url https://jsonplaceholder.typicode.com --wordlist .\wordlists\api-endpoints-res.txt
+
+# PokeAPI — REST bien structuré
+python main.py --url https://pokeapi.co/api/v2 --wordlist .\wordlists\api-endpoints-res.txt
+
+# Rick and Morty
+python main.py --url https://rickandmortyapi.com/api --wordlist .\wordlists\api-endpoints-res.txt
+
+# Open Library
+python main.py --url https://openlibrary.org/api --wordlist .\wordlists\api-endpoints-res.txt
+
+# Dog API
+python main.py --url https://dog.ceo/api --wordlist .\wordlists\api-endpoints-res.txt
+
+----------------------------------------------------------
+----------------------------------------------------------
+
+GraphQL:
+# Countries — GraphQL pur 100% (déjà confirmé ✅)
+python main.py --url https://countries.trevorblades.com --wordlist .\wordlists\api-endpoints-res.txt
+
+# SpaceX GraphQL
+python main.py --url https://spacex-production.up.railway.app --wordlist .\wordlists\api-endpoints-res.txt
+
+# Rick and Morty GraphQL (ils ont les deux !)
+python main.py --url https://rickandmortyapi.com --wordlist .\wordlists\api-endpoints-res.txt
+
+# GraphQL Pokemon
+python main.py --url https://graphql-pokeapi.vercel.app --wordlist .\wordlists\api-endpoints-res.txt
+
+---------------------------------------------------------------
+---------------------------------------------------------------
+SOAP
+-----
+
+# DNE Online — SOAP avec WSDL (déjà testé)
+python main.py --url http://www.dneonline.com --wordlist .\wordlists\api-endpoints-res.txt
+
+# Oorsprong WebServices
+python main.py --url http://webservices.oorsprong.org/websamples.countryinfo/CountryInfoService.wso --wordlist .\wordlists\api-endpoints-res.txt   ||||||| confirmé
+
+# SoapClient calculatrice
+python main.py --url http://www.dneonline.com/calculator.asmx --wordlist .\wordlists\api-endpoints-res.txt
+
+# WebserviceX temperature
+python main.py --url http://www.webservicex.net/ConvertTemperature.asmx --wordlist .\wordlists\api-endpoints-res.txt
+
+-------------
+juice shop
+docker run -d -p 3000:3000 bkimminich/juice-shop
+python main.py --url http://localhost:3000 --wordlist wordlists/api-endpoints.txt --mode full --verbose
+
+-------------
+git clone https://github.com/OWASP/crAPI
+cd crAPI
+docker compose up -d
+# → http://localhost:8888
+
+------------------
+recomm
+
+# 1. Valider que le crawler est propre
+python main.py --url https://jsonplaceholder.typicode.com \
+               --wordlist wordlists/api-endpoints.txt \
+               --mode quick
+
+# 2. Tester la détection complète
+docker run -d -p 3000:3000 bkimminich/juice-shop
+python main.py --url http://localhost:3000 \
+               --wordlist wordlists/api-endpoints.txt \
+               --mode full
+
+# 3. Tester SOAP si besoin
+docker run -d -p 8080:8080 webgoat/goat-and-wolf
+python main.py --url http://localhost:8080/WebGoat \
+               --wordlist wordlists/api-endpoints.txt \
+               --mode quick
+
+               ------------
+
+python main.py --help
+```
+
+Résultat attendu :
+```
+╔═══════════════════════════════════════════════════════╗
+║           API Security Audit Tool  v1.0               ║
+║        REST | GraphQL | SOAP  —  Discovery            ║
+╚═══════════════════════════════════════════════════════╝
+
+usage: main.py [-h] commande ...
+
+API Security Audit Tool — REST | GraphQL | SOAP
+
+positional arguments:
+  commande
+    discovery   Détecte l'API et crawle les endpoints
+    scan        Teste les vulnérabilités sur les endpoints
+    full        Discovery + Scan enchaînés
+
+options:
+  -h, --help  show this help message and exit
+
+------------------
+
+python main.py discovery --help
+python main.py scan --help
+python main.py full --help
+
+--------------
+# Discovery seul
+python main.py discovery --url https://jsonplaceholder.typicode.com --wordlist wordlists/api-endpoints-res.txt --mode quick
+
+# Puis scan sur le résultat
+python main.py scan --input endpoints.json --tests all
+
+# Ou tout en une commande
+python main.py full --url https://jsonplaceholder.typicode.com --wordlist wordlists/api-endpoints-res.txt --tests sqli,xss,idor,auth
+
+python main.py scan --input endpoints.json --tests auth --token YOUR_TOKEN
+
+#test without token
+python main.py scan --input endpoints.json --tests sqli,xss,idor
+
+
+--------------
+apisec discovery --url http://localhost:3000 --wordlist wordlists/api.txt
+apisec scan --input endpoints.json --tests all
+apisec params --url http://localhost:3000 --input endpoints.json
