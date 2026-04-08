@@ -129,6 +129,7 @@ python main.py scan --input endpoints.json --tests sqli,xss,idor
 apisec discovery --url http://localhost:3000 --wordlist wordlists/api.txt
 apisec scan --input endpoints.json --tests all
 apisec params --url http://localhost:3000 --input endpoints.json
+apisec scan --input endpoints.json --tests misconfig
 
 # Clone ou copie ton projet sur Kali
 cd /home/kali/api_audit_tool

@@ -108,6 +108,7 @@ def print_scan_results(results: list):
         "HIGH":     "\033[93m",   # yellow
         "MEDIUM":   "\033[94m",   # blue
         "LOW":      "\033[92m",   # green
+        "INFO":     "\033[97m",   # white
     }
     RESET = "\033[0m"
 
@@ -115,29 +116,33 @@ def print_scan_results(results: list):
         print("\n[✓] No vulnerabilities detected.\n")
         return
 
-    print("\n" + "═" * 57)
-    print(f"  SCAN RESULTS — {len(results)} vulnerability(ies) detected")
-    print("═" * 57)
+    print("\n" + "═" * 65)
+    print(f"  SCAN RESULTS — {len(results)} unique finding(s) detected")
+    print("═" * 65)
 
     for vuln in results:
         color = SEVERITY_COLORS.get(vuln.severity, "")
-        print(f"\n  [{color}{vuln.severity}{RESET}] {vuln.vuln_type}")
-        print(f"  Endpoint  : {vuln.endpoint}")
-        print(f"  Method    : {vuln.method}")
+        print(f"\n  [{color}{vuln.severity}{RESET}] [{vuln.vuln_id}] {vuln.vuln_type}")
+        print(f"  Endpoint   : {vuln.endpoint}")
+        print(f"  Method     : {vuln.method}")
+        if vuln.parameter:
+            print(f"  Parameter  : {vuln.parameter}")
         if vuln.payload:
-            print(f"  Payload   : {vuln.payload}")
-        print(f"  Evidence  : {vuln.evidence[:120]}")
-        print(f"  Info      : {vuln.description}")
-        print("  " + "─" * 50)
+            print(f"  Payload    : {vuln.payload}")
+        print(f"  Evidence   : {vuln.evidence}")
+        print(f"  OWASP      : {vuln.owasp}  |  CWE: {vuln.cwe}  |  Confidence: {vuln.confidence}")
+        print(f"  Description: {vuln.description[:200]}")
+        print(f"  Solution   : {vuln.solution[:200]}")
+        print("  " + "─" * 62)
 
     print("\n  SUMMARY:")
-    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
+    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
         count = sum(1 for v in results if v.severity == sev)
         if count:
             color = SEVERITY_COLORS[sev]
             print(f"    {color}{sev}{RESET} : {count}")
 
-    print("═" * 57 + "\n")
+    print("═" * 65 + "\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
