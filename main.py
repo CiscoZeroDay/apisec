@@ -25,6 +25,7 @@ from core.discovery    import APIDiscovery
 from config.settings   import ScanConfig, ScanMode
 from core.rest_scanner import RESTScanner
 from logger.logger     import logger, set_verbose
+from core.traffic_capture import TrafficCapture
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -131,8 +132,8 @@ def print_scan_results(results: list):
             print(f"  Payload    : {vuln.payload}")
         print(f"  Evidence   : {vuln.evidence}")
         print(f"  OWASP      : {vuln.owasp}  |  CWE: {vuln.cwe}  |  Confidence: {vuln.confidence}")
-        print(f"  Description: {vuln.description[:200]}")
-        print(f"  Solution   : {vuln.solution[:200]}")
+        print(f"  Description: {vuln.description}")
+        print(f"  Solution   : {vuln.solution}")
         print("  " + "─" * 62)
 
     print("\n  SUMMARY:")
@@ -278,6 +279,16 @@ def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
 
     token = getattr(args, "token", None)
 
+     # ── Résolution token-file ──────────────────────────────────────────────
+    if not token and getattr(args, "token_file", None):
+        try:
+            with open(args.token_file, "r") as f:
+                token = f.read().strip()
+            logger.info(f"[cli] Token loaded from {args.token_file}")
+        except FileNotFoundError:
+            logger.error(f"[cli] Token file not found: {args.token_file}")
+            sys.exit(1)
+            
     if not validate_timeout(args.timeout):
         return []
 
@@ -307,7 +318,15 @@ def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
         else:
             if api_type != "REST":
                 print(f"[!] Unsupported API type: '{api_type}' — falling back to REST Scanner")
-            scanner = RESTScanner(base_url, timeout=args.timeout, token=token)
+            scanner = RESTScanner(          # ← remplace seulement celui-ci
+                base_url,
+                timeout    = args.timeout,
+                token      = token,
+                login_url  = getattr(args, "login_url",  None),
+                username   = getattr(args, "username",   None),
+                password   = getattr(args, "password",   None),
+                login_body = getattr(args, "login_body", None),
+            )
 
         return scanner.scan(endpoints, tests=tests)
 
@@ -504,6 +523,16 @@ def cmd_full(args):
     save_json([r.to_dict() for r in results], scan_output)
     print(f"[→] Scan results saved to '{scan_output}'\n")
 
+def cmd_capture(args):
+    """apisec capture --url URL [--port 8080] [--output endpoints.json]"""
+    capture = TrafficCapture(
+        target_url   = args.url,
+        proxy_port   = getattr(args, "proxy_port", 8080),
+        output_path  = args.output or "endpoints.json",
+        traffic_file = getattr(args, "traffic_file", "traffic.mitm"),
+        swagger_file = getattr(args, "swagger_file", "swagger_captured.yaml"),
+    )
+    capture.run()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CLI Parser
@@ -536,11 +565,16 @@ Examples:
 
     # ── Shared arguments ──────────────────────────────────────────────────────
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--timeout", type=int, default=5,    help="HTTP timeout in seconds (default: 5)")
-    common.add_argument("--token",   type=str, default=None, help="Bearer authentication token")
-    common.add_argument("--output",  type=str, default=None, help="Output JSON file path")
-    common.add_argument("--json",    action="store_true",    help="Raw JSON output")
-    common.add_argument("--verbose", action="store_true",    help="Detailed logs")
+    common.add_argument("--timeout",    type=int, default=5,    help="HTTP timeout in seconds (default: 5)")
+    common.add_argument("--token",      type=str, default=None, help="Bearer authentication token")
+    common.add_argument("--token-file", type=str, default=None, dest="token_file", help="Path to a file containing the Bearer token")
+    common.add_argument("--login-url",  type=str, default=None, dest="login_url",  help="Login endpoint (e.g. /identity/api/auth/login)")
+    common.add_argument("--username",   type=str, default=None, help="Username or email for auto-login")
+    common.add_argument("--password",   type=str, default=None, help="Password for auto-login")
+    common.add_argument("--login-body", type=str, default=None, dest="login_body", help="Raw JSON login body")
+    common.add_argument("--output",     type=str, default=None, help="Output JSON file path")
+    common.add_argument("--json",       action="store_true",    help="Raw JSON output")
+    common.add_argument("--verbose",    action="store_true",    help="Detailed logs")
 
     # ── discovery ─────────────────────────────────────────────────────────────
     p_disc = subparsers.add_parser(
@@ -602,6 +636,21 @@ Examples:
                         help="Output file for scan results (e.g. scan_results.json)")
     p_full.set_defaults(func=cmd_full)
 
+    #-----------------------capture--------
+    p_capture = subparsers.add_parser(
+    "capture",
+    parents=[common],
+    help="Capture traffic in real time via mitmproxy",
+    description="Capture HTTP/HTTPS traffic from browser and extract API endpoints.",
+    )
+    p_capture.add_argument("--url",          required=True, help="Target API URL")
+    p_capture.add_argument("--port",         type=int, default=8080, dest="proxy_port",
+                            help="Proxy port (default: 8080)")
+    p_capture.add_argument("--traffic-file", type=str, default="traffic.mitm",
+                            dest="traffic_file", help="Raw traffic output file")
+    p_capture.add_argument("--swagger-file", type=str, default="swagger_captured.yaml",
+                            dest="swagger_file", help="Intermediate swagger file")
+    p_capture.set_defaults(func=cmd_capture)
     return parser
 
 

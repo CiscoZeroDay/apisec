@@ -18,62 +18,67 @@ Vulnerability classes implemented:
         HDR-004  : Missing Content-Security-Policy
         INFO-001 : Server Version Disclosure
         INFO-002 : X-Powered-By Disclosure
-        VERB-001 : HTTP TRACE Method Enabled
+       ***** VERB-001 : HTTP TRACE Method Enabled
         ERR-001  : Verbose Error Messages / Stack Trace Exposure
 
+    [API2] Broken Authentication
+        AUTH-001 : Endpoint accessible without token
+        AUTH-002 : Endpoint accepts invalid/forged token
+        AUTH-003 : JWT 'none' algorithm accepted
+        AUTH-004 : JWT algorithm confusion (RS256 -> HS256)
+
 Usage:
-    scanner = RESTScanner("https://api.example.com", token="Bearer ...")
-    results = scanner.scan(endpoints, tests=["misconfig", "sqli"])
-    for r in results:
-        print(r)
+    # With manual token
+    scanner = RESTScanner("https://api.example.com", token="eyJ...")
+
+    # With automatic login
+    scanner = RESTScanner(
+        "https://api.example.com",
+        login_url = "/identity/api/auth/login",
+        username  = "user@test.com",
+        password  = "pass123",
+    )
+    results = scanner.scan(endpoints, tests=["misconfig", "auth"])
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable
+from urllib.parse import urlparse
 
 from core.requester import Requester
 from logger.logger import logger
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ScanResult — Enriched vulnerability finding
-#  Format inspired by OWASP ZAP alert structure
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+#  ScanResult
+# =============================================================================
 
 @dataclass
 class ScanResult:
-    """
-    Represents a single detected vulnerability finding.
+    """Enriched vulnerability finding — OWASP ZAP alert structure."""
 
-    Fields follow the OWASP ZAP alert structure enriched with
-    Nuclei-style metadata for maximum reporting value.
-    """
-
-    # ── Identity ──────────────────────────────────────────────────────────────
-    vuln_id:    str   # Unique check identifier    e.g. "CORS-001"
-    vuln_type:  str   # Human-readable name        e.g. "Reflected Origin CORS"
-    owasp:      str   # OWASP API Top 10 mapping   e.g. "API8"
-    cwe:        str   # CWE identifier             e.g. "CWE-942"
-    severity:   str   # CRITICAL | HIGH | MEDIUM | LOW | INFO
-    confidence: str   # HIGH | MEDIUM | LOW
-
-    # ── Location ──────────────────────────────────────────────────────────────
-    endpoint:   str           # Full URL tested
-    method:     str           # HTTP method used
-    parameter:  Optional[str] # Specific parameter or header tested (None if N/A)
-
-    # ── Proof ─────────────────────────────────────────────────────────────────
-    payload:    Optional[str] # Input sent to trigger the vulnerability
-    evidence:   str           # Concrete proof extracted from the response
-
-    # ── Guidance ──────────────────────────────────────────────────────────────
-    description: str  # Clear explanation of the vulnerability and its risk
-    solution:    str  # Actionable remediation steps
-    reference:   str  # Link to OWASP / CWE / official documentation
+    vuln_id:     str            # "CORS-001"
+    vuln_type:   str            # "Reflected Origin CORS Misconfiguration"
+    owasp:       str            # "API8"
+    cwe:         str            # "CWE-942"
+    severity:    str            # CRITICAL | HIGH | MEDIUM | LOW | INFO
+    confidence:  str            # HIGH | MEDIUM | LOW
+    endpoint:    str
+    method:      str
+    parameter:   Optional[str]
+    payload:     Optional[str]
+    evidence:    str
+    description: str
+    solution:    str
+    reference:   str
 
     def to_dict(self) -> dict:
         return {
@@ -109,138 +114,97 @@ class ScanResult:
         return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Constants & Patterns
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+#  Module-level constants
+# =============================================================================
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-
-# Unique canary origin used to detect reflected CORS — unlikely to be allowlisted
 _CORS_CANARY = "https://evil-apisec-test.attacker.com"
 
 # ── Security Headers ──────────────────────────────────────────────────────────
-
-# Each entry: (header_name, check_id, vuln_type, severity, cwe, description, solution, reference)
+# (header_name, check_id, vuln_type, severity, cwe, description, solution, reference)
 SECURITY_HEADERS: list[tuple] = [
     (
-        "Strict-Transport-Security",
-        "HDR-001",
-        "Missing Strict-Transport-Security (HSTS)",
-        "MEDIUM",
-        "CWE-319",
-        (
-            "The Strict-Transport-Security (HSTS) header is absent. Without HSTS, browsers "
-            "may connect to the API over plain HTTP, exposing credentials and session tokens "
-            "to network-level interception (man-in-the-middle attacks)."
-        ),
+        "Strict-Transport-Security", "HDR-001",
+        "Missing Strict-Transport-Security (HSTS)", "MEDIUM", "CWE-319",
+        "The Strict-Transport-Security (HSTS) header is absent. Without HSTS, browsers "
+        "may connect to the API over plain HTTP, exposing credentials and session tokens "
+        "to network-level interception (man-in-the-middle attacks).",
         "Add the header: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
         "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security",
     ),
     (
-        "X-Content-Type-Options",
-        "HDR-002",
-        "Missing X-Content-Type-Options",
-        "LOW",
-        "CWE-693",
-        (
-            "The X-Content-Type-Options header is absent. Without it, browsers may "
-            "MIME-sniff responses away from the declared content type, potentially "
-            "executing malicious scripts disguised as benign content."
-        ),
+        "X-Content-Type-Options", "HDR-002",
+        "Missing X-Content-Type-Options", "LOW", "CWE-693",
+        "The X-Content-Type-Options header is absent. Without it, browsers may "
+        "MIME-sniff responses away from the declared content type, potentially "
+        "executing malicious scripts disguised as benign content.",
         "Add the header: X-Content-Type-Options: nosniff",
         "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options",
     ),
     (
-        "X-Frame-Options",
-        "HDR-003",
-        "Missing X-Frame-Options",
-        "MEDIUM",
-        "CWE-1021",
-        (
-            "The X-Frame-Options header is absent. This allows the API responses to be "
-            "embedded in iframes on third-party pages, enabling clickjacking attacks "
-            "where users are tricked into performing unintended actions."
-        ),
+        "X-Frame-Options", "HDR-003",
+        "Missing X-Frame-Options", "MEDIUM", "CWE-1021",
+        "The X-Frame-Options header is absent. This allows the API responses to be "
+        "embedded in iframes on third-party pages, enabling clickjacking attacks "
+        "where users are tricked into performing unintended actions.",
         "Add the header: X-Frame-Options: DENY  (or SAMEORIGIN if framing is needed internally)",
         "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options",
     ),
     (
-        "Content-Security-Policy",
-        "HDR-004",
-        "Missing Content-Security-Policy (CSP)",
-        "MEDIUM",
-        "CWE-693",
-        (
-            "The Content-Security-Policy header is absent. CSP is a critical defense "
-            "against Cross-Site Scripting (XSS) attacks by specifying which sources "
-            "of content are allowed to be loaded and executed by the browser."
-        ),
+        "Content-Security-Policy", "HDR-004",
+        "Missing Content-Security-Policy (CSP)", "MEDIUM", "CWE-693",
+        "The Content-Security-Policy header is absent. CSP is a critical defense "
+        "against Cross-Site Scripting (XSS) attacks by specifying which sources "
+        "of content are allowed to be loaded and executed by the browser.",
         "Define a strict CSP policy. Minimum: Content-Security-Policy: default-src 'self'",
         "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy",
     ),
 ]
 
 # ── Server Information Disclosure ─────────────────────────────────────────────
-
-# Patterns that indicate version information is being disclosed
-# Each: (header_name, check_id, vuln_type, cwe)
+# (header_name, check_id, vuln_type, cwe, description, solution, reference)
 INFO_HEADERS: list[tuple] = [
     (
-        "Server",
-        "INFO-001",
-        "Server Version Disclosure",
-        "CWE-200",
-        (
-            "The Server header exposes the web server software name and version. "
-            "This information allows attackers to identify known CVEs targeting "
-            "the specific version and craft targeted exploits."
-        ),
+        "Server", "INFO-001", "Server Version Disclosure", "CWE-200",
+        "The Server header exposes the web server software name and version. "
+        "This information allows attackers to identify known CVEs targeting "
+        "the specific version and craft targeted exploits.",
         "Configure the server to return a generic value (e.g. Server: webserver) "
         "or suppress the header entirely.",
         "https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/"
         "01-Information_Gathering/02-Fingerprint_Web_Server",
     ),
     (
-        "X-Powered-By",
-        "INFO-002",
-        "Technology Stack Disclosure via X-Powered-By",
-        "CWE-200",
-        (
-            "The X-Powered-By header reveals the backend technology and version "
-            "(e.g. PHP/7.2.1, ASP.NET). This fingerprinting information aids attackers "
-            "in identifying framework-specific vulnerabilities."
-        ),
+        "X-Powered-By", "INFO-002", "Technology Stack Disclosure via X-Powered-By", "CWE-200",
+        "The X-Powered-By header reveals the backend technology and version "
+        "(e.g. PHP/7.2.1, ASP.NET). This fingerprinting information aids attackers "
+        "in identifying framework-specific vulnerabilities.",
         "Remove the X-Powered-By header from server configuration. "
         "In Express.js: app.disable('x-powered-by'). In PHP: expose_php = Off.",
         "https://owasp.org/www-project-web-security-testing-guide/",
     ),
 ]
 
-# Version pattern — detects version numbers in header values (e.g. Apache/2.4.1, PHP/7.2)
 _VERSION_PATTERN = re.compile(r"[\d]+\.[\d]+")
 
 # ── Verbose Error Patterns ────────────────────────────────────────────────────
-
-# Patterns indicating stack traces or internal technical information in responses
 VERBOSE_ERROR_PATTERNS: list[tuple[str, str]] = [
-    # (regex_pattern, description_of_what_it_reveals)
-    (r"at\s+[\w\.]+\([\w\.]+:\d+\)",        "Java/Kotlin stack trace"),
-    (r"at\s+System\.",                        ".NET stack trace"),
-    (r"at\s+Microsoft\.",                     ".NET/ASP.NET stack trace"),
-    (r"Traceback \(most recent call last\)",  "Python stack trace"),
-    (r"File \"[^\"]+\", line \d+",            "Python file path disclosure"),
-    (r"in /(?:var|home|srv|app|usr)/\w+",    "Linux file path disclosure"),
-    (r"(?:mysqli?|pg|sqlite|odbc)_",          "Database function name disclosure"),
-    (r"ORA-\d{5}",                            "Oracle database error code"),
-    (r"Microsoft OLE DB",                     "Microsoft database driver disclosure"),
-    (r"SQLSTATE\[\w+\]",                      "PDO/SQL state error disclosure"),
-    (r"(?:Laravel|Symfony|Django|Rails|Spring|Express)\s+[\d\.]+",
-                                              "Framework version disclosure"),
+    (r"at\s+[\w\.]+\([\w\.]+:\d+\)",             "Java/Kotlin stack trace"),
+    (r"at\s+System\.",                             ".NET stack trace"),
+    (r"at\s+Microsoft\.",                          ".NET/ASP.NET stack trace"),
+    (r"Traceback \(most recent call last\)",       "Python stack trace"),
+    (r"File \"[^\"]+\", line \d+",                 "Python file path disclosure"),
+    (r"in /(?:var|home|srv|app|usr)/\w+",         "Linux file path disclosure"),
+    (r"(?:mysqli?|pg|sqlite|odbc)_",               "Database function name disclosure"),
+    (r"ORA-\d{5}",                                 "Oracle database error code"),
+    (r"Microsoft OLE DB",                          "Microsoft database driver disclosure"),
+    (r"SQLSTATE\[\w+\]",                           "PDO/SQL state error disclosure"),
+    (r"(?:Laravel|Symfony|Django|Rails|Spring|Express)\s+[\d\.]+", "Framework version disclosure"),
     (r"(?:PHP Fatal error|PHP Warning|PHP Notice)", "PHP error disclosure"),
-    (r"on line \d+",                          "Source code line number disclosure"),
+    (r"on line \d+",                               "Source code line number disclosure"),
 ]
 
-# Payloads designed to trigger verbose errors without causing actual damage
 VERBOSE_ERROR_TRIGGERS: list[dict] = [
     {"method": "GET",  "params": {"id": "' OR 1=1--"}},
     {"method": "GET",  "params": {"id": None}},
@@ -248,56 +212,91 @@ VERBOSE_ERROR_TRIGGERS: list[dict] = [
     {"method": "GET",  "params": {"id": "A" * 8192}},
 ]
 
+# ── Broken Authentication ─────────────────────────────────────────────────────
+_INVALID_TOKEN = "apisec.invalid.token.test.xyz123abc456"
 
-# ─────────────────────────────────────────────────────────────────────────────
+_LOGIN_FIELD_CANDIDATES: list[str] = [
+    "email", "username", "user", "login",
+    "identifier", "account", "mail", "name",
+]
+
+_TOKEN_FIELD_CANDIDATES: list[str] = [
+    "token", "access_token", "accessToken", "jwt",
+    "id_token", "idToken", "auth_token", "authToken",
+]
+
+
+_RATE_LIMIT_ATTEMPTS   = 20
+_RATE_LIMIT_HEADERS    = {
+    "retry-after",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "x-rate-limit-limit",
+    "x-rate-limit-remaining",
+    "ratelimit-limit",
+    "ratelimit-remaining",
+}
+
+# =============================================================================
 #  RESTScanner
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 
 class RESTScanner:
     """
     Automated REST API vulnerability scanner.
 
     Implements a rule-based detection engine inspired by Nuclei templates
-    combined with OWASP ZAP's per-parameter active scanning approach.
-
-    Each vulnerability category is a self-contained method that:
-      1. Sends targeted HTTP requests
-      2. Applies precise matchers to the response
-      3. Returns enriched ScanResult findings with full metadata
-
-    Usage:
-        scanner = RESTScanner("https://api.example.com", token="Bearer eyJ...")
-        results = scanner.scan(endpoints, tests=["misconfig"])
-        for finding in results:
-            print(finding)
+    combined with OWASP ZAP per-parameter active scanning approach.
     """
 
-    # Maps test names to their handler methods
     _TEST_REGISTRY: dict[str, str] = {
-        "misconfig":   "_test_misconfig",
-        # Coming in next iterations:
+        "misconfig": "_test_misconfig",
+        "auth":      "_test_auth",
         # "sqli":        "_test_sqli",
         # "blind_sqli":  "_test_blind_sqli",
         # "nosql":       "_test_nosql",
         # "xss":         "_test_xss",
         # "ssrf":        "_test_ssrf",
         # "idor":        "_test_idor",
-        # "auth":        "_test_auth",
         # "mass_assign": "_test_mass_assignment",
         # "rate_limit":  "_test_rate_limit",
     }
 
     def __init__(
         self,
-        base_url: str,
-        timeout:  int = 10,
-        token:    Optional[str] = None,
+        base_url:   str,
+        timeout:    int = 10,
+        token:      Optional[str] = None,
+        login_url:  Optional[str] = None,
+        username:   Optional[str] = None,
+        password:   Optional[str] = None,
+        login_body: Optional[str] = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.http     = Requester(self.base_url, timeout=timeout)
+        self.base_url  = base_url.rstrip("/")
+        self.http      = Requester(self.base_url, timeout=timeout)
+        self.token     = None
+        self.login_url = login_url
+        self._auth005_done = False
+        self._jwks_public_key_cache: Optional[str] = None
 
         if token:
+            self.token = token
             self.http.set_token(token)
+            logger.info("[scanner] Token provided manually")
+
+        elif login_url and login_body:
+            self.token = self._auto_login_raw(login_url, login_body)
+            if self.token:
+                self.http.set_token(self.token)
+
+        elif login_url and username and password:
+            self.token = self._auto_login_detect(login_url, username, password)
+            if self.token:
+                self.http.set_token(self.token)
+
+        else:
+            logger.info("[scanner] No token or credentials — AUTH-001/003/004 will be skipped")
 
     # =========================================================================
     #  Entry point
@@ -308,23 +307,10 @@ class RESTScanner:
         endpoints: list[str],
         tests:     Optional[list[str]] = None,
     ) -> list[ScanResult]:
-        """
-        Run vulnerability checks against a list of endpoints.
-
-        Args:
-            endpoints : List of full URLs to test (from discovery phase).
-            tests     : Subset of test names to run. None runs all available.
-                        Available: misconfig, sqli, blind_sqli, nosql,
-                                   xss, ssrf, idor, auth, mass_assign, rate_limit
-
-        Returns:
-            List of ScanResult — one entry per detected vulnerability.
-        """
-        # Resolve active test methods
         if tests is None:
             active = list(self._TEST_REGISTRY.keys())
         else:
-            active = [t for t in tests if t in self._TEST_REGISTRY]
+            active  = [t for t in tests if t in self._TEST_REGISTRY]
             unknown = [t for t in tests if t not in self._TEST_REGISTRY]
             if unknown:
                 logger.warning(f"[scanner] Unknown tests ignored: {', '.join(unknown)}")
@@ -333,28 +319,21 @@ class RESTScanner:
             logger.error("[scanner] No valid tests selected.")
             return []
 
-        logger.info(
-            f"[*] REST Scanner — {len(endpoints)} endpoint(s) — "
-            f"active tests: {active}"
-        )
+        logger.info(f"[*] REST Scanner — {len(endpoints)} endpoint(s) — active tests: {active}")
 
         findings: list[ScanResult] = []
-
         for endpoint in endpoints:
             logger.debug(f"    [scan] {endpoint}")
             for test_name in active:
-                method_name = self._TEST_REGISTRY[test_name]
-                test_method = getattr(self, method_name)
+                test_method = getattr(self, self._TEST_REGISTRY[test_name])
                 try:
                     results = test_method(endpoint)
                     if results:
                         findings.extend(results)
                 except Exception as e:
-                    logger.debug(f"    [scan:{test_name}] Unexpected error on {endpoint}: {e}")
+                    logger.debug(f"    [scan:{test_name}] Error on {endpoint}: {e}")
 
-        logger.info(
-            f"[+] Scan complete — {len(findings)} finding(s) detected"
-        )
+        logger.info(f"[+] Scan complete — {len(findings)} finding(s) detected")
         return self._deduplicate(findings)
 
     # =========================================================================
@@ -362,72 +341,39 @@ class RESTScanner:
     # =========================================================================
 
     def _test_misconfig(self, endpoint: str) -> list[ScanResult]:
-        """
-        Runs all Security Misconfiguration checks against a single endpoint.
-
-        Checks performed:
-            CORS-001 : Reflected Origin
-            CORS-002 : Wildcard Origin + Credentials
-            CORS-003 : Wildcard Origin
-            HDR-001  : Missing HSTS
-            HDR-002  : Missing X-Content-Type-Options
-            HDR-003  : Missing X-Frame-Options
-            HDR-004  : Missing Content-Security-Policy
-            INFO-001 : Server Version Disclosure
-            INFO-002 : X-Powered-By Disclosure
-            VERB-001 : HTTP TRACE Method Enabled
-            ERR-001  : Verbose Error / Stack Trace Exposure
-        """
         findings: list[ScanResult] = []
         path = self._to_path(endpoint)
 
-        # Fetch baseline response — reused by multiple checks
         baseline = self.http.get(path)
         if baseline is None:
             logger.debug(f"    [misconfig] No response from {endpoint} — skipping")
             return findings
 
-        # Run all misconfig sub-checks
         findings += self._check_cors(endpoint, path)
         findings += self._check_security_headers(endpoint, baseline)
         findings += self._check_server_disclosure(endpoint, baseline)
         findings += self._check_trace_method(endpoint, path)
         findings += self._check_verbose_errors(endpoint, path)
-
         return findings
 
-    # ── CORS checks ───────────────────────────────────────────────────────────
-
     def _check_cors(self, endpoint: str, path: str) -> list[ScanResult]:
-        """
-        Detects CORS misconfigurations via three checks:
-          CORS-001: Server reflects the attacker-controlled Origin header
-          CORS-002: Wildcard origin combined with Allow-Credentials
-          CORS-003: Unrestricted wildcard origin (no credentials)
-        """
         findings: list[ScanResult] = []
 
-        # Send GET with a canary Origin that should never be allowlisted
-        r = self.http.get(path, headers={"Origin": _CORS_CANARY})
+        r    = self.http.get(path, headers={"Origin": _CORS_CANARY})
         if r is None:
             return findings
 
-        acao  = r.headers.get("Access-Control-Allow-Origin",  "").strip()
-        acac  = r.headers.get("Access-Control-Allow-Credentials", "").strip().lower()
-        acam  = r.headers.get("Access-Control-Allow-Methods", "").strip()
+        acao = r.headers.get("Access-Control-Allow-Origin",      "").strip()
+        acac = r.headers.get("Access-Control-Allow-Credentials", "").strip().lower()
+        acam = r.headers.get("Access-Control-Allow-Methods",     "").strip()
 
-        # ── CORS-001 : Reflected Origin ───────────────────────────────────────
         if _CORS_CANARY in acao:
-            # Determine if credentials are also allowed → escalate to CRITICAL
-            severity   = "CRITICAL" if acac == "true" else "HIGH"
-            confidence = "HIGH"
-
+            severity      = "CRITICAL" if acac == "true" else "HIGH"
             evidence_parts = [f"Access-Control-Allow-Origin: {acao}"]
             if acac == "true":
                 evidence_parts.append("Access-Control-Allow-Credentials: true")
             if acam:
                 evidence_parts.append(f"Access-Control-Allow-Methods: {acam}")
-
             description = (
                 "The server reflects the attacker-controlled Origin header without validation. "
                 "Any malicious website can send cross-origin requests to this API and read "
@@ -438,344 +384,711 @@ class RESTScanner:
                     " With Allow-Credentials: true, this is CRITICAL — the attacker receives "
                     "the victim's authenticated session cookies and tokens in the API response."
                 )
-
             findings.append(ScanResult(
-                vuln_id     = "CORS-001",
-                vuln_type   = "Reflected Origin CORS Misconfiguration",
-                owasp       = "API8",
-                cwe         = "CWE-942",
-                severity    = severity,
-                confidence  = confidence,
-                endpoint    = endpoint,
-                method      = "GET",
-                parameter   = "Origin (request header)",
-                payload     = f"Origin: {_CORS_CANARY}",
-                evidence    = " | ".join(evidence_parts),
-                description = description,
-                solution    = (
+                vuln_id="CORS-001", vuln_type="Reflected Origin CORS Misconfiguration",
+                owasp="API8", cwe="CWE-942", severity=severity, confidence="HIGH",
+                endpoint=endpoint, method="GET", parameter="Origin (request header)",
+                payload=f"Origin: {_CORS_CANARY}", evidence=" | ".join(evidence_parts),
+                description=description,
+                solution=(
                     "Maintain an explicit server-side allowlist of trusted origins. "
-                    "Validate the Origin header against this allowlist before reflecting it. "
-                    "Never use request-derived values as the Allow-Origin response value."
+                    "Validate the Origin header against this allowlist before reflecting it."
                 ),
-                reference   = (
+                reference=(
                     "https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application"
                     "_Security_Testing/11-Client-Side_Testing/07-Testing_Cross_Origin_Resource_Sharing"
                 ),
             ))
-            logger.info(f"    [VULN] CORS-001 Reflected Origin ({severity}) → {endpoint}")
-            # If CORS-001 fires we do not report CORS-003 — same root cause
+            logger.info(f"    [VULN] CORS-001 Reflected Origin ({severity}) -> {endpoint}")
             return findings
 
-        # ── CORS-002 : Wildcard + Credentials ────────────────────────────────
         if acao == "*" and acac == "true":
             findings.append(ScanResult(
-                vuln_id     = "CORS-002",
-                vuln_type   = "Wildcard CORS with Credentials Enabled",
-                owasp       = "API8",
-                cwe         = "CWE-942",
-                severity    = "CRITICAL",
-                confidence  = "HIGH",
-                endpoint    = endpoint,
-                method      = "GET",
-                parameter   = "Origin (request header)",
-                payload     = None,
-                evidence    = (
-                    "Access-Control-Allow-Origin: * | "
-                    "Access-Control-Allow-Credentials: true"
-                ),
-                description = (
+                vuln_id="CORS-002", vuln_type="Wildcard CORS with Credentials Enabled",
+                owasp="API8", cwe="CWE-942", severity="CRITICAL", confidence="HIGH",
+                endpoint=endpoint, method="GET", parameter="Origin (request header)",
+                payload=None,
+                evidence="Access-Control-Allow-Origin: * | Access-Control-Allow-Credentials: true",
+                description=(
                     "The API sets both Access-Control-Allow-Origin: * and "
                     "Access-Control-Allow-Credentials: true. This combination is "
-                    "explicitly forbidden by the CORS specification because browsers "
-                    "must not expose credentials to wildcard origins. Some implementations "
-                    "bypass this restriction, making this configuration critically dangerous."
+                    "explicitly forbidden by the CORS specification."
                 ),
-                solution    = (
+                solution=(
                     "Never combine wildcard CORS with credentials. "
-                    "If credentials are required, use a strict origin allowlist instead of *. "
-                    "Remove Access-Control-Allow-Credentials: true if a wildcard is needed."
+                    "Use a strict origin allowlist if credentials are required."
                 ),
-                reference   = (
-                    "https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS/Errors/"
-                    "CORSNotSupportingCredentials"
-                ),
+                reference="https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS/Errors/CORSNotSupportingCredentials",
             ))
-            logger.info(f"    [VULN] CORS-002 Wildcard + Credentials → {endpoint}")
+            logger.info(f"    [VULN] CORS-002 Wildcard + Credentials -> {endpoint}")
             return findings
 
-        # ── CORS-003 : Wildcard Origin (no credentials) ───────────────────────
         if acao == "*":
             findings.append(ScanResult(
-                vuln_id     = "CORS-003",
-                vuln_type   = "Unrestricted Wildcard CORS Origin",
-                owasp       = "API8",
-                cwe         = "CWE-942",
-                severity    = "MEDIUM",
-                confidence  = "HIGH",
-                endpoint    = endpoint,
-                method      = "GET",
-                parameter   = "Origin (request header)",
-                payload     = None,
-                evidence    = "Access-Control-Allow-Origin: *",
-                description = (
+                vuln_id="CORS-003", vuln_type="Unrestricted Wildcard CORS Origin",
+                owasp="API8", cwe="CWE-942", severity="MEDIUM", confidence="HIGH",
+                endpoint=endpoint, method="GET", parameter="Origin (request header)",
+                payload=None, evidence="Access-Control-Allow-Origin: *",
+                description=(
                     "The API allows cross-origin requests from any domain via a wildcard. "
-                    "While less critical without credentials, any website can read this "
-                    "API's responses. If the API returns any user-specific or sensitive "
-                    "data, this becomes a significant information disclosure risk."
+                    "Any website can read this API's responses."
                 ),
-                solution    = (
-                    "Restrict CORS to an explicit allowlist of trusted origins. "
-                    "If the API is truly public and returns no sensitive data, "
-                    "document this decision explicitly."
-                ),
-                reference   = (
+                solution="Restrict CORS to an explicit allowlist of trusted origins.",
+                reference=(
                     "https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application"
                     "_Security_Testing/11-Client-Side_Testing/07-Testing_Cross_Origin_Resource_Sharing"
                 ),
             ))
-            logger.info(f"    [VULN] CORS-003 Wildcard Origin → {endpoint}")
+            logger.info(f"    [VULN] CORS-003 Wildcard Origin -> {endpoint}")
 
         return findings
-
-    # ── Security Headers checks ───────────────────────────────────────────────
 
     def _check_security_headers(self, endpoint: str, baseline) -> list[ScanResult]:
-        """
-        Checks for the presence and correctness of HTTP security headers.
-        Uses the baseline response — no additional HTTP requests needed.
-
-        Checks: HSTS, X-Content-Type-Options, X-Frame-Options, CSP
-
-        Fix 1: HSTS is skipped for HTTP endpoints — it only applies to HTTPS.
-        """
         findings: list[ScanResult] = []
         is_http = endpoint.startswith("http://")
+        headers_lower = {k.lower(): v for k, v in baseline.headers.items()}
 
-        # Normalize response headers to lowercase for case-insensitive comparison
-        response_headers_lower = {k.lower(): v for k, v in baseline.headers.items()}
-
-        for (header, check_id, vuln_type, severity, cwe,
-             description, solution, reference) in SECURITY_HEADERS:
-
-            # Fix 1 — HSTS false positive: only meaningful over HTTPS
+        for (header, check_id, vuln_type, severity, cwe, description, solution, reference) in SECURITY_HEADERS:
             if header == "Strict-Transport-Security" and is_http:
-                logger.debug(
-                    f"    [misconfig] HDR-001 skipped — HSTS not applicable over HTTP → {endpoint}"
-                )
+                logger.debug(f"    [misconfig] HDR-001 skipped — HSTS not applicable over HTTP -> {endpoint}")
                 continue
-
-            if header.lower() not in response_headers_lower:
+            if header.lower() not in headers_lower:
                 findings.append(ScanResult(
-                    vuln_id     = check_id,
-                    vuln_type   = vuln_type,
-                    owasp       = "API8",
-                    cwe         = cwe,
-                    severity    = severity,
-                    confidence  = "HIGH",
-                    endpoint    = endpoint,
-                    method      = "GET",
-                    parameter   = f"{header} (response header)",
-                    payload     = None,
-                    evidence    = f"Header '{header}' is absent from the response",
-                    description = description,
-                    solution    = solution,
-                    reference   = reference,
+                    vuln_id=check_id, vuln_type=vuln_type, owasp="API8", cwe=cwe,
+                    severity=severity, confidence="HIGH", endpoint=endpoint, method="GET",
+                    parameter=f"{header} (response header)", payload=None,
+                    evidence=f"Header '{header}' is absent from the response",
+                    description=description, solution=solution, reference=reference,
                 ))
-                logger.info(f"    [VULN] {check_id} Missing {header} → {endpoint}")
+                logger.info(f"    [VULN] {check_id} Missing {header} -> {endpoint}")
 
         return findings
-
-    # ── Server Information Disclosure checks ──────────────────────────────────
 
     def _check_server_disclosure(self, endpoint: str, baseline) -> list[ScanResult]:
-        """
-        Detects version information disclosure in response headers.
-        Flags Server and X-Powered-By headers that contain version numbers.
-
-        INFO-001: Server version disclosure
-        INFO-002: X-Powered-By technology disclosure
-        """
         findings: list[ScanResult] = []
-
-        for (header, check_id, vuln_type, cwe,
-             description, solution, reference) in INFO_HEADERS:
-
+        for (header, check_id, vuln_type, cwe, description, solution, reference) in INFO_HEADERS:
             value = baseline.headers.get(header, "").strip()
-            if not value:
-                continue
-
-            # Only flag if a version number is present — e.g. Apache/2.4.1, PHP/7.2
-            if _VERSION_PATTERN.search(value):
+            if value and _VERSION_PATTERN.search(value):
                 findings.append(ScanResult(
-                    vuln_id     = check_id,
-                    vuln_type   = vuln_type,
-                    owasp       = "API8",
-                    cwe         = cwe,
-                    severity    = "LOW",
-                    confidence  = "HIGH",
-                    endpoint    = endpoint,
-                    method      = "GET",
-                    parameter   = f"{header} (response header)",
-                    payload     = None,
-                    evidence    = f"{header}: {value}",
-                    description = description,
-                    solution    = solution,
-                    reference   = reference,
+                    vuln_id=check_id, vuln_type=vuln_type, owasp="API8", cwe=cwe,
+                    severity="LOW", confidence="HIGH", endpoint=endpoint, method="GET",
+                    parameter=f"{header} (response header)", payload=None,
+                    evidence=f"{header}: {value}",
+                    description=description, solution=solution, reference=reference,
                 ))
-                logger.info(f"    [VULN] {check_id} {header} discloses version: {value} → {endpoint}")
-
+                logger.info(f"    [VULN] {check_id} {header} discloses version: {value} -> {endpoint}")
         return findings
 
-    # ── HTTP TRACE Method check ───────────────────────────────────────────────
-
     def _check_trace_method(self, endpoint: str, path: str) -> list[ScanResult]:
-        """
-        VERB-001: Detects if the HTTP TRACE method is enabled.
-
-        TRACE is designed for diagnostic purposes and should never be
-        enabled in production. It reflects the full request back to the
-        client, enabling Cross-Site Tracing (XST) attacks that can expose
-        HttpOnly cookies and Authorization headers to JavaScript.
-        """
         findings: list[ScanResult] = []
-
         r = self.http._request("TRACE", path)
         if r is None:
             return findings
 
-        # TRACE is confirmed if:
-        # 1. Server returns 200 with the request body reflected, OR
-        # 2. Server returns 200 (some servers reflect without echo)
         if r.status_code == 200:
-            # Verify the response echoes back request content (definitive proof)
-            body = r.text or ""
+            body        = r.text or ""
             is_confirmed = (
                 "TRACE" in body
-                or "trace" in body.lower()
                 or r.headers.get("Content-Type", "").lower().startswith("message/http")
             )
             confidence = "HIGH" if is_confirmed else "MEDIUM"
-
             findings.append(ScanResult(
-                vuln_id     = "VERB-001",
-                vuln_type   = "HTTP TRACE Method Enabled",
-                owasp       = "API8",
-                cwe         = "CWE-16",
-                severity    = "MEDIUM",
-                confidence  = confidence,
-                endpoint    = endpoint,
-                method      = "TRACE",
-                parameter   = None,
-                payload     = "TRACE / HTTP/1.1",
-                evidence    = (
-                    f"TRACE method returned HTTP {r.status_code}. "
+                vuln_id="VERB-001", vuln_type="HTTP TRACE Method Enabled",
+                owasp="API8", cwe="CWE-16", severity="MEDIUM", confidence=confidence,
+                endpoint=endpoint, method="TRACE", parameter=None,
+                payload="TRACE / HTTP/1.1",
+                evidence=(
+                    f"TRACE returned HTTP {r.status_code}. "
                     f"Content-Type: {r.headers.get('Content-Type', 'N/A')}. "
                     f"Body preview: {body[:100].replace(chr(10), ' ')}"
-                    if body else f"TRACE method returned HTTP {r.status_code}"
                 ),
-                description = (
-                    "The HTTP TRACE method is enabled on this endpoint. TRACE reflects "
-                    "the entire request back to the client, including all headers. "
-                    "When combined with Cross-Site Scripting (XST), this allows attackers "
-                    "to steal HttpOnly cookies and Authorization headers that are "
-                    "normally inaccessible to JavaScript."
+                description=(
+                    "The HTTP TRACE method is enabled. It reflects the full request back, "
+                    "enabling XST attacks that expose HttpOnly cookies and Authorization headers."
                 ),
-                solution    = (
-                    "Disable the TRACE method at the web server level. "
+                solution=(
                     "Apache: TraceEnable Off. "
-                    "Nginx: if ($request_method = TRACE) { return 405; }. "
-                    "IIS: Remove TRACE from allowed verbs."
+                    "Nginx: if ($request_method = TRACE) { return 405; }."
                 ),
-                reference   = "https://owasp.org/www-community/attacks/Cross_Site_Tracing",
+                reference="https://owasp.org/www-community/attacks/Cross_Site_Tracing",
             ))
-            logger.info(f"    [VULN] VERB-001 TRACE enabled (confidence: {confidence}) → {endpoint}")
+            logger.info(f"    [VULN] VERB-001 TRACE enabled (confidence: {confidence}) -> {endpoint}")
 
         return findings
 
-    # ── Verbose Error / Stack Trace check ─────────────────────────────────────
-
     def _check_verbose_errors(self, endpoint: str, path: str) -> list[ScanResult]:
-        """
-        ERR-001: Detects verbose error messages and stack trace disclosure.
-
-        Sends intentionally malformed inputs to provoke error responses,
-        then scans the response body for patterns indicating:
-        - Stack traces (Java, .NET, Python, PHP)
-        - Internal file paths
-        - Database error details
-        - Framework version information
-
-        Only one finding is reported per endpoint (first match wins).
-        """
         findings: list[ScanResult] = []
-
         for trigger in VERBOSE_ERROR_TRIGGERS:
             method = trigger["method"]
-
-            if method == "GET":
-                r = self.http.get(path, params=trigger.get("params"))
-            else:
-                r = self.http.post(path, json=trigger.get("json"))
-
-            if r is None:
+            r = (
+                self.http.get(path, params=trigger.get("params"))
+                if method == "GET"
+                else self.http.post(path, json=trigger.get("json"))
+            )
+            if r is None or r.status_code < 400:
                 continue
-
-            # Only analyze error responses — 4xx and 5xx
-            if r.status_code < 400:
-                continue
-
             body = r.text or ""
-            body_lower = body.lower()
-
             for pattern, leak_type in VERBOSE_ERROR_PATTERNS:
                 match = re.search(pattern, body, re.IGNORECASE)
                 if not match:
                     continue
-
-                # Extract surrounding context for evidence
                 start   = max(0, match.start() - 30)
                 end     = min(len(body), match.end() + 100)
                 excerpt = body[start:end].strip().replace("\n", " ")
-
                 findings.append(ScanResult(
-                    vuln_id     = "ERR-001",
-                    vuln_type   = "Verbose Error / Stack Trace Exposure",
-                    owasp       = "API8",
-                    cwe         = "CWE-209",
-                    severity    = "MEDIUM",
-                    confidence  = "HIGH",
-                    endpoint    = endpoint,
-                    method      = method,
-                    parameter   = None,
-                    payload     = str(trigger.get("params") or trigger.get("json")),
-                    evidence    = (
-                        f"HTTP {r.status_code} — {leak_type} detected. "
-                        f"Excerpt: \"{excerpt[:150]}\""
+                    vuln_id="ERR-001", vuln_type="Verbose Error / Stack Trace Exposure",
+                    owasp="API8", cwe="CWE-209", severity="MEDIUM", confidence="HIGH",
+                    endpoint=endpoint, method=method, parameter=None,
+                    payload=str(trigger.get("params") or trigger.get("json")),
+                    evidence=f"HTTP {r.status_code} — {leak_type} detected. Excerpt: \"{excerpt[:150]}\"",
+                    description=(
+                        f"The API returns a verbose error containing {leak_type}. "
+                        "Detailed errors expose internal implementation details."
                     ),
-                    description = (
-                        f"The API returns a verbose error response containing {leak_type}. "
-                        "Detailed error messages expose internal implementation details "
-                        "(file paths, library versions, database structure) that give "
-                        "attackers a precise roadmap of the backend infrastructure."
+                    solution=(
+                        "Return generic error messages in production. "
+                        "Log detailed errors server-side only."
                     ),
-                    solution    = (
-                        "Configure the application to return generic error messages in production. "
-                        "Log detailed errors server-side only (never in API responses). "
-                        "Set environment to production mode to suppress stack traces. "
-                        "Implement a global exception handler that returns sanitized errors."
-                    ),
-                    reference   = (
-                        "https://owasp.org/www-community/Improper_Error_Handling"
-                    ),
+                    reference="https://owasp.org/www-community/Improper_Error_Handling",
                 ))
-                logger.info(
-                    f"    [VULN] ERR-001 Verbose error ({leak_type}) "
-                    f"HTTP {r.status_code} → {endpoint}"
-                )
-                # One finding per endpoint is sufficient
+                logger.info(f"    [VULN] ERR-001 Verbose error ({leak_type}) HTTP {r.status_code} -> {endpoint}")
                 return findings
+        return findings
+
+    # =========================================================================
+    #  [API2] Broken Authentication
+    # =========================================================================
+
+    def _test_auth(self, endpoint: str) -> list[ScanResult]:
+        """
+        Runs all Broken Authentication checks.
+
+        AUTH-001 : Endpoint accessible without token
+        AUTH-002 : Endpoint accepts invalid/forged token
+        AUTH-003 : JWT 'none' algorithm accepted
+        AUTH-004 : JWT algorithm confusion (RS256 -> HS256)
+        AUTH-005 : No rate limiting on login endpoint
+        """
+        findings: list[ScanResult] = []
+        path = self._to_path(endpoint)
+
+        findings += self._check_no_token_required(endpoint, path)
+        findings += self._check_invalid_token_accepted(endpoint, path)
+
+        if self.token:
+            findings += self._check_jwt_none_algorithm(endpoint, path)
+            findings += self._check_jwt_alg_confusion(endpoint, path)
+        else:
+            logger.debug(f"    [auth] AUTH-003/004 skipped — no token -> {endpoint}")
+        
+        if self.login_url and not self._auth005_done:
+            self._auth005_done = True
+            findings += self._check_login_rate_limit(endpoint)
+       
+        return findings
+
+    def _check_no_token_required(self, endpoint: str, path: str) -> list[ScanResult]:
+        """AUTH-001: Tests if a protected endpoint returns data without any token."""
+        findings: list[ScanResult] = []
+
+        if not self.token:
+            return findings
+
+        # Step 1 — authenticated request
+        r_auth = self.http.get(path)
+        if r_auth is None or r_auth.status_code not in (200, 201):
+            return findings
+        auth_body = (r_auth.text or "").strip()
+
+        # Step 2 — unauthenticated request
+        self.http.clear_token()
+        r_unauth = self.http.get(path)
+        self.http.set_token(self.token)
+
+        if r_unauth is None:
+            return findings
+
+        unauth_status = r_unauth.status_code
+        unauth_body   = (r_unauth.text or "").strip()
+
+        # Step 3 — analyze
+        if unauth_status in (401, 403):
+            logger.debug(f"    [auth] AUTH-001 protected (HTTP {unauth_status}) -> {endpoint}")
+            return findings
+
+        if unauth_status in (200, 201):
+            if unauth_body == auth_body:
+                logger.debug(f"    [auth] AUTH-001 public endpoint -> {endpoint}")
+                return findings
+            findings.append(ScanResult(
+                vuln_id="AUTH-001",
+                vuln_type="Endpoint Accessible Without Authentication Token",
+                owasp="API2", cwe="CWE-306", severity="HIGH", confidence="HIGH",
+                endpoint=endpoint, method="GET",
+                parameter="Authorization (request header)",
+                payload="No Authorization header sent",
+                evidence=(
+                    f"HTTP {unauth_status} without token. "
+                    f"Auth response: {len(auth_body)} bytes. "
+                    f"Unauth response: {len(unauth_body)} bytes. "
+                    f"Preview: {unauth_body[:100]}"
+                ),
+                description=(
+                    "This endpoint returns data without any authentication token. "
+                    "Protected resources are accessible to unauthenticated users."
+                ),
+                solution=(
+                    "Enforce authentication middleware on every protected route. "
+                    "Validate the token before any business logic executes."
+                ),
+                reference="https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/",
+            ))
+            logger.info(f"    [VULN] AUTH-001 No token required -> {endpoint}")
 
         return findings
+
+    def _check_invalid_token_accepted(self, endpoint: str, path: str) -> list[ScanResult]:
+        """AUTH-002: Tests if the server accepts a completely invalid token."""
+        findings: list[ScanResult] = []
+
+        self.http.clear_token()
+        self.http.set_token(_INVALID_TOKEN)
+        r = self.http.get(path)
+        self.http.clear_token()
+        if self.token:
+            self.http.set_token(self.token)
+
+        if r is None:
+            return findings
+
+        if r.status_code in (200, 201):
+            findings.append(ScanResult(
+                vuln_id="AUTH-002",
+                vuln_type="Endpoint Accepts Invalid / Forged Token",
+                owasp="API2", cwe="CWE-287", severity="HIGH", confidence="HIGH",
+                endpoint=endpoint, method="GET",
+                parameter="Authorization (request header)",
+                payload=f"Bearer {_INVALID_TOKEN}",
+                evidence=(
+                    f"HTTP {r.status_code} with a clearly invalid non-JWT token. "
+                    f"Preview: {(r.text or '')[:100]}"
+                ),
+                description=(
+                    "The server returns 200 with a completely invalid token. "
+                    "Token signature, structure, and content are not validated."
+                ),
+                solution=(
+                    "Validate token signature, expiry, issuer, and audience on every request. "
+                    "Return 401 for any token that fails validation."
+                ),
+                reference="https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/",
+            ))
+            logger.info(f"    [VULN] AUTH-002 Invalid token accepted -> {endpoint}")
+        else:
+            logger.debug(f"    [auth] AUTH-002 invalid token rejected (HTTP {r.status_code}) -> {endpoint}")
+        return findings
+
+    def _check_jwt_none_algorithm(self, endpoint: str, path: str) -> list[ScanResult]:
+        """AUTH-003: Tests if the server accepts a JWT with alg: none (no signature)."""
+        findings: list[ScanResult] = []
+
+        decoded = self._decode_jwt_payload(self.token)
+        if not decoded:
+            return findings
+
+        # ← capturer l'alg AVANT toute manipulation
+        original_alg = self._get_jwt_alg(self.token)
+    
+        none_token = self._forge_jwt_none(decoded)
+        if not none_token:
+            return findings
+
+        self.http.clear_token()
+        self.http.set_token(none_token)
+        r = self.http.get(path)
+        self.http.clear_token()
+        self.http.set_token(self.token)
+
+        if r and r.status_code in (200, 201):
+            findings.append(ScanResult(
+                vuln_id="AUTH-003",
+                vuln_type="JWT 'none' Algorithm Accepted",
+                owasp="API2", cwe="CWE-347", severity="CRITICAL", confidence="HIGH",
+                endpoint=endpoint, method="GET",
+                parameter="Authorization (JWT alg field)",
+                payload=f"Bearer {none_token[:80]}... (alg:none, empty signature)",
+                evidence=(
+                    f"HTTP {r.status_code} with JWT alg:none (no signature). "
+                    f"Original alg: {self._get_jwt_alg(self.token)}."
+                ),
+                description=(
+                    "The server accepted a JWT with alg:none — no cryptographic signature. "
+                    "Any attacker can forge arbitrary tokens without knowing any secret key. "
+                    "This is a complete authentication bypass."
+                ),
+                solution=(
+                    "Explicitly reject alg:none. Hardcode the expected algorithm server-side. "
+                    "Never trust the algorithm from the token header."
+                ),
+                reference="https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/",
+            ))
+            logger.info(f"    [VULN] AUTH-003 JWT none algorithm accepted -> {endpoint}")
+
+        return findings
+
+    def _check_jwt_alg_confusion(self, endpoint: str, path: str) -> list[ScanResult]:
+        """AUTH-004: Tests JWT algorithm confusion attack (RS256 -> HS256 with public key)."""
+        findings: list[ScanResult] = []
+
+        original_alg = self._get_jwt_alg(self.token)
+        if original_alg not in ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512"):
+            logger.debug(f"    [auth] AUTH-004 skipped — {original_alg} not asymmetric -> {endpoint}")
+            return findings
+
+        public_key_pem = self._fetch_jwks_public_key()
+        if not public_key_pem:
+            logger.debug(f"    [auth] AUTH-004 skipped — no JWKS endpoint found -> {endpoint}")
+            return findings
+
+        decoded = self._decode_jwt_payload(self.token)
+        if not decoded:
+            return findings
+
+        forged = self._forge_jwt_hs256(decoded, public_key_pem)
+        if not forged:
+            return findings
+
+        self.http.clear_token()
+        self.http.set_token(forged)
+        r = self.http.get(path)
+        self.http.clear_token()
+        self.http.set_token(self.token)
+
+        if r and r.status_code in (200, 201):
+            findings.append(ScanResult(
+                vuln_id="AUTH-004",
+                vuln_type="JWT Algorithm Confusion (RS256 -> HS256)",
+                owasp="API2", cwe="CWE-347", severity="CRITICAL", confidence="HIGH",
+                endpoint=endpoint, method="GET",
+                parameter="Authorization (JWT alg field)",
+                payload=f"Bearer {forged[:80]}... ({original_alg} -> HS256 with public key)",
+                evidence=(
+                    f"HTTP {r.status_code} with HS256 token signed using server's RSA public key. "
+                    f"Original algorithm: {original_alg}."
+                ),
+                description=(
+                    f"Server accepted a token where alg was changed from {original_alg} to HS256, "
+                    f"signed with the public RSA key as HMAC secret. "
+                    f"Attacker can forge any token without knowing the private key."
+                ),
+                solution=(
+                    "Hardcode the expected algorithm server-side. "
+                    "Use: jwt.decode(token, key, algorithms=['RS256']). "
+                    "Never read the algorithm from the token header."
+                ),
+                reference="https://portswigger.net/web-security/jwt/algorithm-confusion",
+            ))
+            logger.info(f"    [VULN] AUTH-004 JWT alg confusion ({original_alg}->HS256) -> {endpoint}")
+
+        return findings
+    def _check_login_rate_limit(self, endpoint: str) -> list[ScanResult]:
+        """
+        AUTH-005: Tests if the login endpoint enforces rate limiting.
+
+        Sends _RATE_LIMIT_ATTEMPTS rapid POST requests with wrong credentials.
+        Vulnerable if: no HTTP 429 received AND no rate-limit headers detected
+        across all attempts.
+        """
+        findings: list[ScanResult] = []
+
+        login_path = self._to_path(self.login_url)
+        dummy_body = {"username": "apisec_ratelimit_test", "password": "Wr0ng!Pass#2024"}
+
+        got_429            = False
+        got_ratelimit_hdr  = False
+        first_block_at     = None
+
+        logger.debug(
+            f"    [auth] AUTH-005 sending {_RATE_LIMIT_ATTEMPTS} requests -> {self.login_url}"
+        )
+
+        for attempt in range(1, _RATE_LIMIT_ATTEMPTS + 1):
+            r = self.http.post(login_path, json=dummy_body)
+
+            if r is None:
+                logger.debug(f"    [auth] AUTH-005 no response at attempt {attempt}")
+                continue
+
+            # Check 1 — HTTP 429
+            if r.status_code == 429:
+                got_429         = True
+                first_block_at  = attempt
+                logger.debug(f"    [auth] AUTH-005 HTTP 429 at attempt {attempt} -> protected")
+                break
+
+            # Check 2 — Rate-limit headers (any attempt)
+            response_headers_lower = {h.lower() for h in r.headers.keys()}
+            matched_headers = response_headers_lower & _RATE_LIMIT_HEADERS
+            if matched_headers:
+                got_ratelimit_hdr = True
+                first_block_at    = attempt
+                logger.debug(
+                    f"    [auth] AUTH-005 rate-limit header(s) detected at attempt {attempt}: "
+                    f"{matched_headers} -> protected"
+                )
+                break
+
+        # Verdict
+        if got_429 or got_ratelimit_hdr:
+            mechanism = "HTTP 429" if got_429 else f"header(s): {matched_headers}"
+            logger.debug(
+                f"    [auth] AUTH-005 rate limiting detected ({mechanism}) "
+                f"at attempt {first_block_at} -> {self.login_url}"
+            )
+            return findings  # Protected — no finding
+
+        # No rate limiting detected across all attempts → vulnerable
+        findings.append(ScanResult(
+            vuln_id="AUTH-005",
+            vuln_type="No Rate Limiting on Login Endpoint",
+            owasp="API2",
+            cwe="CWE-307",
+            severity="HIGH",
+            confidence="HIGH",
+            endpoint=self.login_url,
+            method="POST",
+            parameter="username / password (request body)",
+            payload=f"{_RATE_LIMIT_ATTEMPTS}x POST with wrong credentials — no block triggered",
+            evidence=(
+                f"Sent {_RATE_LIMIT_ATTEMPTS} rapid login attempts with invalid credentials. "
+                f"No HTTP 429 received. "
+                f"No rate-limit headers detected "
+                f"(checked: Retry-After, X-RateLimit-*, RateLimit-*)."
+            ),
+            description=(
+                "The login endpoint does not enforce any rate limiting. "
+                "An attacker can send unlimited authentication attempts without being blocked or slowed down, "
+                "enabling brute-force and credential-stuffing attacks."
+            ),
+            solution=(
+                "Implement rate limiting on the login endpoint: return HTTP 429 after N failed attempts. "
+                "Add headers: Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining. "
+                "Consider account lockout after repeated failures and CAPTCHA for suspicious IPs."
+            ),
+            reference="https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/",
+        ))
+        logger.info(f"    [VULN] AUTH-005 No rate limiting on login -> {self.login_url}")
+
+        return findings
+    # =========================================================================
+    #  Auto-login helpers
+    # =========================================================================
+
+    def _auto_login_detect(self, login_url: str, username: str, password: str) -> Optional[str]:
+        """Tries common login field names until one succeeds."""
+        logger.info(f"[scanner] Auto-login: detecting field on {login_url}")
+        for field_name in _LOGIN_FIELD_CANDIDATES:
+            r = self.http.post(login_url, json={field_name: username, "password": password})
+            if r is None or r.status_code not in (200, 201):
+                continue
+            token = self._extract_token_from_response(r)
+            if token:
+                logger.info(f"[scanner] Auto-login OK — field: '{field_name}'")
+                return token
+        logger.warning("[scanner] Auto-login failed — try --login-body with a custom JSON body")
+        return None
+
+    def _auto_login_raw(self, login_url: str, login_body: str) -> Optional[str]:
+        """Logs in using a raw JSON body string."""
+        try:
+            body = json.loads(login_body)
+        except json.JSONDecodeError as e:
+            logger.error(f"[scanner] Invalid --login-body JSON: {e}")
+            return None
+        r = self.http.post(login_url, json=body)
+        if r is None or r.status_code not in (200, 201):
+            logger.warning(f"[scanner] Auto-login failed HTTP {r.status_code if r else 'None'}")
+            return None
+        token = self._extract_token_from_response(r)
+        if token:
+            logger.info("[scanner] Auto-login OK — token obtained")
+        return token
+
+    def _extract_token_from_response(self, r) -> Optional[str]:
+        """Extracts a JWT from a login response — checks headers and common JSON fields."""
+        if r is None:
+            return None
+        auth_header = r.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return auth_header[7:]
+        try:
+            body = r.json()
+        except Exception:
+            return None
+        if not isinstance(body, dict):
+            return None
+        for field_name in _TOKEN_FIELD_CANDIDATES:
+            value = body.get(field_name)
+            if value and isinstance(value, str) and len(value) > 20:
+                return value
+        for nested_key in ("data", "result", "user", "auth"):
+            nested = body.get(nested_key)
+            if isinstance(nested, dict):
+                for field_name in _TOKEN_FIELD_CANDIDATES:
+                    value = nested.get(field_name)
+                    if value and isinstance(value, str) and len(value) > 20:
+                        return value
+        return None
+
+    # =========================================================================
+    #  JWT helpers
+    # =========================================================================
+
+    @staticmethod
+    def _b64_decode_jwt(segment: str) -> Optional[bytes]:
+        """Base64url-decode a JWT segment, handling missing padding."""
+        try:
+            padding = 4 - len(segment) % 4
+            if padding != 4:
+                segment += "=" * padding
+            return base64.urlsafe_b64decode(segment)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _b64_encode_jwt(data: bytes) -> str:
+        """Base64url-encode without padding (JWT standard)."""
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+    def _decode_jwt_payload(self, token: str) -> Optional[dict]:
+        """Decodes the payload of a JWT without verifying the signature."""
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return None
+            raw = self._b64_decode_jwt(parts[1])
+            if not raw:
+                return None
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return None
+
+    def _get_jwt_alg(self, token: str) -> str:
+        """Returns the algorithm from a JWT header (e.g. 'RS256')."""
+        try:
+            parts = token.split(".")
+            if len(parts) < 2:
+                return "UNKNOWN"
+            raw = self._b64_decode_jwt(parts[0])
+            if not raw:
+                return "UNKNOWN"
+            return json.loads(raw.decode("utf-8")).get("alg", "UNKNOWN")
+        except Exception:
+            return "UNKNOWN"
+
+    def _forge_jwt_none(self, payload: dict) -> Optional[str]:
+        """Forges a JWT with alg:none and an empty signature."""
+        try:
+            header = {"alg": "none", "typ": "JWT"}
+            h_enc  = self._b64_encode_jwt(json.dumps(header,  separators=(",", ":")).encode())
+            p_enc  = self._b64_encode_jwt(json.dumps(payload, separators=(",", ":")).encode())
+            return f"{h_enc}.{p_enc}."
+        except Exception as e:
+            logger.debug(f"    [auth] JWT none forge failed: {e}")
+            return None
+
+    def _fetch_jwks_public_key(self) -> Optional[str]:
+        """Fetches the server's RSA public key from common JWKS endpoints.
+        Result is cached after the first successful fetch.
+        """
+        # Cache — évite de refaire la requête à chaque endpoint scanné
+        if self._jwks_public_key_cache is not None:
+            return self._jwks_public_key_cache
+
+        jwks_paths = [
+            "/.well-known/jwks.json",
+            "/jwks.json",
+            "/api/jwks.json",
+            "/auth/jwks.json",
+            "/identity/jwks.json",
+            "/.well-known/openid-configuration",
+        ]
+        for path in jwks_paths:
+            r = self.http.get(path)
+            if r is None or r.status_code != 200:
+                continue
+            try:
+                data = r.json()
+            except Exception:
+                continue
+            if "jwks_uri" in data:
+                r2 = self.http.get(urlparse(data["jwks_uri"]).path)
+                if r2 and r2.status_code == 200:
+                    try:
+                        data = r2.json()
+                    except Exception:
+                        continue
+            for key in data.get("keys", []):
+                if key.get("kty") == "RSA":
+                    pem = self._jwks_key_to_pem(key)
+                    if pem:
+                        logger.info(f"[scanner] JWKS public key found at {path}")
+                        self._jwks_public_key_cache = pem
+                        return pem
+        return None
+
+    @staticmethod
+    def _jwks_key_to_pem(jwk: dict) -> Optional[str]:
+        """Converts a JWK RSA public key to PEM format (stdlib only, no cryptography lib)."""
+        try:
+            def b64url_to_int(s: str) -> int:
+                padding = 4 - len(s) % 4
+                if padding != 4:
+                    s += "=" * padding
+                return int.from_bytes(base64.urlsafe_b64decode(s), "big")
+
+            n = b64url_to_int(jwk.get("n", ""))
+            e = b64url_to_int(jwk.get("e", ""))
+
+            def enc_len(length: int) -> bytes:
+                if length < 0x80:
+                    return bytes([length])
+                lb = length.to_bytes((length.bit_length() + 7) // 8, "big")
+                return bytes([0x80 | len(lb)]) + lb
+
+            def enc_int(v: int) -> bytes:
+                raw = v.to_bytes((v.bit_length() + 7) // 8, "big")
+                if raw[0] & 0x80:
+                    raw = b"\x00" + raw
+                return b"\x02" + enc_len(len(raw)) + raw
+
+            n_der = enc_int(n)
+            e_der = enc_int(e)
+            seq   = b"\x30" + enc_len(len(n_der) + len(e_der)) + n_der + e_der
+            alg   = bytes.fromhex("300d06092a864886f70d0101010500")
+            bits  = b"\x03" + enc_len(len(seq) + 1) + b"\x00" + seq
+            spki  = b"\x30" + enc_len(len(alg) + len(bits)) + alg + bits
+
+            b64   = base64.b64encode(spki).decode()
+            lines = [b64[i:i + 64] for i in range(0, len(b64), 64)]
+            return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----\n"
+        except Exception as e:
+            logger.debug(f"    [auth] JWK to PEM failed: {e}")
+            return None
+
+    def _forge_jwt_hs256(self, payload: dict, public_key_pem: str) -> Optional[str]:
+        """Forges a JWT signed with HS256 using the server's public key as HMAC secret."""
+        try:
+            header        = {"alg": "HS256", "typ": "JWT"}
+            h_enc         = self._b64_encode_jwt(json.dumps(header,  separators=(",", ":")).encode())
+            p_enc         = self._b64_encode_jwt(json.dumps(payload, separators=(",", ":")).encode())
+            signing_input = f"{h_enc}.{p_enc}".encode("utf-8")
+            secret        = public_key_pem.encode("utf-8")
+            signature     = hmac.new(secret, signing_input, hashlib.sha256).digest()
+            return f"{h_enc}.{p_enc}.{self._b64_encode_jwt(signature)}"
+        except Exception as e:
+            logger.debug(f"    [auth] JWT HS256 forge failed: {e}")
+            return None
 
     # =========================================================================
     #  Private helpers
@@ -794,30 +1107,22 @@ class RESTScanner:
 
     def _deduplicate(self, findings: list[ScanResult]) -> list[ScanResult]:
         """
-        Deduplicate findings by vuln_id across all endpoints.
-
-        Global misconfigurations (CORS, headers, server info) are reported once
-        with the full list of affected endpoints in the evidence — instead of
-        repeating the same finding 15 times.
-
-        Endpoint-specific findings (IDOR, auth bypass, SQLi) are kept as-is.
+        Deduplicates global findings (CORS, headers, server info) by vuln_id.
+        Endpoint-specific findings (auth, SQLi, IDOR) are kept as-is.
         """
-        # vuln_ids that represent global server-level issues
         GLOBAL_CHECKS = {
             "CORS-001", "CORS-002", "CORS-003",
             "HDR-001",  "HDR-002",  "HDR-003",  "HDR-004",
-            "INFO-001", "INFO-002",
-            "VERB-001",
+            "INFO-001", "INFO-002", "VERB-001",
         }
 
-        seen:   dict[str, ScanResult] = {}  # vuln_id → representative finding
+        seen:   dict[str, ScanResult] = {}
         unique: list[ScanResult]      = []
 
         for finding in findings:
             if finding.vuln_id not in GLOBAL_CHECKS:
                 unique.append(finding)
                 continue
-
             if finding.vuln_id not in seen:
                 seen[finding.vuln_id] = finding
                 finding._affected_endpoints = [finding.endpoint]
@@ -825,40 +1130,25 @@ class RESTScanner:
             else:
                 seen[finding.vuln_id]._affected_endpoints.append(finding.endpoint)
 
-        # Rebuild endpoint + evidence for deduplicated global findings
-        from urllib.parse import urlparse
         for finding in unique:
             affected = getattr(finding, "_affected_endpoints", None)
-            if not affected:
+            if not affected or len(affected) == 1:
                 continue
 
-            total = len(affected)
-
-            if total == 1:
-                # Single endpoint — keep as-is
-                continue
-
-            # Replace endpoint with a cleaner representation
+            total    = len(affected)
             parsed   = urlparse(finding.endpoint)
             base_url = f"{parsed.scheme}://{parsed.netloc}"
             finding.endpoint = f"{base_url} ({total} endpoints affected)"
 
-            # Rebuild evidence with clean path list
-            original_evidence = finding.evidence.split(" | Affects")[0]  # strip old suffix
-            paths = [
-                urlparse(ep).path
-                for ep in affected
-            ]
-            # Show all affected paths
-            path_str = "\n             ".join(f"• {p}" for p in paths)
-
+            original_evidence = finding.evidence.split(" | Affects")[0]
+            path_str = "\n             ".join(
+                f"• {urlparse(ep).path}" for ep in affected
+            )
             finding.evidence = (
                 f"{original_evidence}\n"
                 f"           Affects {total} endpoint(s):\n"
                 f"             {path_str}"
             )
 
-        logger.info(
-            f"[*] Deduplication: {len(findings)} raw findings → {len(unique)} unique findings"
-        )
+        logger.info(f"[*] Deduplication: {len(findings)} raw findings -> {len(unique)} unique findings")
         return unique

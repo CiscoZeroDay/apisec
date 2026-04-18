@@ -1,0 +1,100 @@
+openapi: 3.0.0
+info:
+  title: traffic.mitm Mitmproxy2Swagger
+  version: 1.0.0
+servers:
+- url: http://localhost:8888
+  description: The default server
+paths:
+  /workshop/api/shop/orders/all:
+    get:
+      summary: GET all
+      responses:
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+  /workshop/api/mechanic/service_requests:
+    get:
+      summary: GET service_requests
+      responses:
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+  /identity/api/v2/user/dashboard:
+    get:
+      summary: GET dashboard
+      responses:
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  status:
+                    type: number
+  /identity/api/auth/login:
+    get:
+      summary: GET login
+      responses:
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  title:
+                    type: string
+                  status:
+                    type: number
+                  detail:
+                    type: string
+                  instance:
+                    type: string
+  /workshop/api/shop/products:
+    get:
+      summary: GET products
+      responses:
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+  /community/api/v2/community/posts/recent:
+    get:
+      summary: GET recent
+      responses:
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+x-path-templates:
+# Remove the ignore: prefix to generate an endpoint with its URL
+# Lines that are closer to the top take precedence, the matching is greedy
+  []

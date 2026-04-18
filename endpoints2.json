@@ -1,0 +1,13 @@
+{
+  "target_url": "http://localhost:8888",
+  "api_type": "REST",
+  "endpoints": [
+    "http://localhost:8888/workshop/api/shop/orders/all",
+    "http://localhost:8888/workshop/api/mechanic/service_requests",
+    "http://localhost:8888/identity/api/v2/user/dashboard",
+    "http://localhost:8888/identity/api/auth/login",
+    "http://localhost:8888/workshop/api/shop/products",
+    "http://localhost:8888/community/api/v2/community/posts/recent"
+  ],
+  "source": "traffic_capture"
+}
