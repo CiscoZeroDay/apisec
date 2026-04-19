@@ -360,38 +360,113 @@ class TrafficCapture:
         return False
 
     def _install_cert_linux(self) -> bool:
-        """Install the certificate into the Linux system trust store."""
+        """
+        Install the mitmproxy CA certificate into the Linux system trust store.
+
+        Supports:
+            - Debian / Ubuntu  : update-ca-certificates
+            - Fedora / RHEL    : update-ca-trust
+            - Arch Linux       : trust anchor
+
+        Uses subprocess with sudo for all privileged operations since
+        APISec runs as a non-root user.
+        """
+        # ── Debian / Ubuntu ───────────────────────────────────────────────────
         if shutil.which("update-ca-certificates"):
-            # Debian / Ubuntu
-            dest = Path("/usr/local/share/ca-certificates/mitmproxy-ca.crt")
+            dest = "/usr/local/share/ca-certificates/mitmproxy-ca.crt"
             try:
-                shutil.copy2(_MITM_CA_CERT_PEM, dest)
-                result = subprocess.run(
-                    ["sudo", "update-ca-certificates"],
-                    capture_output=True, text=True,
+                # Copy certificate with elevated privileges
+                copy_result = subprocess.run(
+                    ["sudo", "cp", str(_MITM_CA_CERT_PEM), dest],
+                    capture_output = True,
+                    text           = True,
                 )
-                if result.returncode == 0:
+                if copy_result.returncode != 0:
+                    logger.error(
+                        f"[capture] Certificate copy failed: {copy_result.stderr.strip()}"
+                    )
+                    self._print_manual_cert_instructions()
+                    return False
+
+                # Update system trust store
+                update_result = subprocess.run(
+                    ["sudo", "update-ca-certificates"],
+                    capture_output = True,
+                    text           = True,
+                )
+                if update_result.returncode == 0:
                     logger.info("[capture] Certificate installed (Debian/Ubuntu) ✓")
                     return True
+                else:
+                    logger.error(
+                        f"[capture] update-ca-certificates failed: "
+                        f"{update_result.stderr.strip()}"
+                    )
+
+            except FileNotFoundError:
+                logger.error("[capture] sudo not found — cannot install certificate")
             except Exception as e:
                 logger.debug(f"[capture] Debian cert install error: {e}")
 
+        # ── Fedora / CentOS / RHEL ────────────────────────────────────────────
         elif shutil.which("update-ca-trust"):
-            # Fedora / CentOS / RHEL / Arch
-            dest = Path("/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt")
+            dest = "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"
             try:
-                shutil.copy2(_MITM_CA_CERT_PEM, dest)
-                result = subprocess.run(
-                    ["sudo", "update-ca-trust", "extract"],
-                    capture_output=True, text=True,
+                copy_result = subprocess.run(
+                    ["sudo", "cp", str(_MITM_CA_CERT_PEM), dest],
+                    capture_output = True,
+                    text           = True,
                 )
-                if result.returncode == 0:
+                if copy_result.returncode != 0:
+                    logger.error(
+                        f"[capture] Certificate copy failed: {copy_result.stderr.strip()}"
+                    )
+                    self._print_manual_cert_instructions()
+                    return False
+
+                update_result = subprocess.run(
+                    ["sudo", "update-ca-trust", "extract"],
+                    capture_output = True,
+                    text           = True,
+                )
+                if update_result.returncode == 0:
                     logger.info("[capture] Certificate installed (Fedora/RHEL) ✓")
                     return True
+                else:
+                    logger.error(
+                        f"[capture] update-ca-trust failed: "
+                        f"{update_result.stderr.strip()}"
+                    )
+
+            except FileNotFoundError:
+                logger.error("[capture] sudo not found — cannot install certificate")
             except Exception as e:
                 logger.debug(f"[capture] RHEL cert install error: {e}")
 
-        logger.warning("[capture] Could not auto-install certificate on this Linux distro")
+        # ── Arch Linux ────────────────────────────────────────────────────────
+        elif shutil.which("trust"):
+            try:
+                result = subprocess.run(
+                    ["sudo", "trust", "anchor", "--store", str(_MITM_CA_CERT_PEM)],
+                    capture_output = True,
+                    text           = True,
+                )
+                if result.returncode == 0:
+                    logger.info("[capture] Certificate installed (Arch Linux) ✓")
+                    return True
+                else:
+                    logger.error(
+                        f"[capture] trust anchor failed: {result.stderr.strip()}"
+                    )
+            except Exception as e:
+                logger.debug(f"[capture] Arch cert install error: {e}")
+
+        else:
+            logger.warning(
+                "[capture] No supported certificate manager found "
+                "(update-ca-certificates / update-ca-trust / trust)"
+            )
+
         self._print_manual_cert_instructions()
         return False
 
