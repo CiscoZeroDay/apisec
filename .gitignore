@@ -13,7 +13,8 @@ scan_results.json
 params.json
 token.txt
 *.pdf
-
+*.json
+*.mitm
 # IDE
 .vscode/
 .idea/
