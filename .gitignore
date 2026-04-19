@@ -12,6 +12,9 @@ endpoints.json
 scan_results.json
 params.json
 token.txt
+swagger_captured.yaml
+traffic.mitm
+endpoints2.json
 *.pdf
 *.json
 *.mitm
