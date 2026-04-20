@@ -111,10 +111,10 @@ python main.py full --help
 
 --------------
 # Discovery seul
-python main.py discovery --url https://jsonplaceholder.typicode.com --wordlist wordlists/api-endpoints-res.txt --mode quick
+apisec discovery --url https://jsonplaceholder.typicode.com --wordlist wordlists/api-endpoints-res.txt --mode quick
 
 # Puis scan sur le résultat
-python main.py scan --input endpoints.json --tests all
+apisec scan --input endpoints.json --tests all
 
 # Ou tout en une commande
 python main.py full --url https://jsonplaceholder.typicode.com --wordlist wordlists/api-endpoints-res.txt --tests sqli,xss,idor,auth

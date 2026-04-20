@@ -292,6 +292,51 @@ def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
     if not validate_timeout(args.timeout):
         return []
 
+    # ── Params map ────────────────────────────────────────────────────────
+    params_map: dict[str, list[str]] = {}
+    params_file = "params.json"
+
+    if os.path.isfile(params_file):
+        try:
+            with open(params_file, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            params_map = {
+                ep: [p["param"] for p in params]
+                for ep, params in raw.items()
+            }
+            logger.info(f"[cli] Params loaded from {params_file} — {len(params_map)} endpoint(s)")
+        except Exception as e:
+            logger.warning(f"[cli] Could not load params.json: {e}")
+    else:
+        logger.info("[cli] params.json not found — running param discovery automatically...")
+        try:
+            from core.param_discoverer import ParamDiscoverer
+            from urllib.parse import urlparse as _urlparse
+
+            _parsed   = _urlparse(endpoints[0])
+            _base_url = f"{_parsed.scheme}://{_parsed.netloc}"
+
+            discoverer = ParamDiscoverer(
+                _base_url,
+                timeout = args.timeout,
+                token   = token,
+            )
+            raw = discoverer.discover_all(endpoints)
+
+            json_results = {
+                ep: [{"param": p, "reason": r} for p, r in params]
+                for ep, params in raw.items()
+            }
+            save_json(json_results, params_file)
+            logger.info(f"[cli] Params discovered and saved to {params_file}")
+
+            params_map = {
+                ep: [p for p, _ in params]
+                for ep, params in raw.items()
+            }
+        except Exception as e:
+            logger.warning(f"[cli] Param discovery failed: {e}")
+    
     # Determine base URL
     base_url = getattr(args, "url", None)
     if not base_url and endpoints:
@@ -326,6 +371,8 @@ def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
                 username   = getattr(args, "username",   None),
                 password   = getattr(args, "password",   None),
                 login_body = getattr(args, "login_body", None),
+                params_map = params_map,
+                deep       = getattr(args, "deep", False),
             )
 
         return scanner.scan(endpoints, tests=tests)
@@ -575,7 +622,12 @@ Examples:
     common.add_argument("--output",     type=str, default=None, help="Output JSON file path")
     common.add_argument("--json",       action="store_true",    help="Raw JSON output")
     common.add_argument("--verbose",    action="store_true",    help="Detailed logs")
-
+    common.add_argument(
+        "--deep",
+        action  = "store_true",
+        default = False,
+        help    = "Deep scan — enables time-based SQLi techniques (slower but more thorough)"
+    )
     # ── discovery ─────────────────────────────────────────────────────────────
     p_disc = subparsers.add_parser(
         "discovery",

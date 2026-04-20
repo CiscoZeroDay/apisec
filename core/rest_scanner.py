@@ -55,13 +55,12 @@ from urllib.parse import urlparse
 
 from core.requester import Requester
 from logger.logger import logger
-
-
+from core.models import ScanResult
 # =============================================================================
 #  ScanResult
 # =============================================================================
 
-@dataclass
+'''@dataclass
 class ScanResult:
     """Enriched vulnerability finding — OWASP ZAP alert structure."""
 
@@ -112,7 +111,7 @@ class ScanResult:
         lines.append(f"  OWASP     : {self.owasp}  |  CWE: {self.cwe}  |  Confidence: {self.confidence}")
         lines.append(f"  Solution  : {self.solution}")
         return "\n".join(lines)
-
+'''
 
 # =============================================================================
 #  Module-level constants
@@ -253,7 +252,7 @@ class RESTScanner:
     _TEST_REGISTRY: dict[str, str] = {
         "misconfig": "_test_misconfig",
         "auth":      "_test_auth",
-        # "sqli":        "_test_sqli",
+        "sqli":        "_test_sqli",
         # "blind_sqli":  "_test_blind_sqli",
         # "nosql":       "_test_nosql",
         # "xss":         "_test_xss",
@@ -272,12 +271,16 @@ class RESTScanner:
         username:   Optional[str] = None,
         password:   Optional[str] = None,
         login_body: Optional[str] = None,
+        params_map: Optional[dict] = None,
+        deep:       bool = False,
     ) -> None:
         self.base_url  = base_url.rstrip("/")
         self.http      = Requester(self.base_url, timeout=timeout)
         self.token     = None
         self.login_url = login_url
         self._auth005_done = False
+        self.params_map = params_map or {} 
+        self.deep = deep
         self._jwks_public_key_cache: Optional[str] = None
 
         if token:
@@ -1105,6 +1108,84 @@ class RESTScanner:
         except Exception:
             return ""
 
+    def _get_injection_params(
+        self,
+        endpoint: str,
+        path:     str,
+    ) -> list[str]:
+        """
+        Builds the list of parameters to test for injection.
+
+        Sources :
+        1. params_map  — confirmed params from ParamDiscoverer
+        2. Path variables — numeric/UUID segments in URL
+        3. Response body keys — JSON keys from baseline GET response
+
+        No whitelist — all discovered params are passed to the injection engine.
+        Blacklisting is handled by SQLiEngine._filter_params().
+        """
+        collected: set[str] = set()
+
+        # Source 1 — params_map
+        for param in self.params_map.get(endpoint, []):
+            collected.add(param)
+
+        # Source 2 — path variables
+        segments = [s for s in path.split("/") if s]
+        for i, seg in enumerate(segments):
+            if seg.isdigit():
+                prev = segments[i - 1] if i > 0 else "resource"
+                name = prev.rstrip("s") + "_id" if prev.endswith("s") else prev + "_id"
+                collected.add(name)
+            elif re.match(
+                r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+                seg, re.IGNORECASE
+            ):
+                prev = segments[i - 1] if i > 0 else "resource"
+                name = prev.rstrip("s") + "_id" if prev.endswith("s") else prev + "_id"
+                collected.add(name)
+
+        # Source 3 — response body keys
+        try:
+            r = self.http.get(path)
+            if r and r.status_code in (200, 201):
+                body = r.json()
+                if isinstance(body, dict):
+                    collected.update(body.keys())
+                elif isinstance(body, list) and body and isinstance(body[0], dict):
+                    collected.update(body[0].keys())
+        except Exception:
+            pass
+
+        if collected:
+            logger.debug(
+                f"    [inject] {len(collected)} param(s) discovered "
+                f"for {endpoint}: {list(collected)}"
+            )
+            return list(collected)
+
+        logger.debug(f"    [inject] No params found for {endpoint}")
+        return []
+
+    def _test_sqli(self, endpoint: str) -> list[ScanResult]:
+        """SQL Injection via sqlmap — see exploit/sqli_engine.py"""
+        from exploit.sqli_engine import SQLiEngine
+
+        path   = self._to_path(endpoint)
+        params = self._get_injection_params(endpoint, path)
+
+        if not params:
+            logger.debug(f"    [sqli] No params found — skipping -> {endpoint}")
+            return []
+
+        engine = SQLiEngine(
+            base_url = self.base_url,
+            token    = self.token,
+            timeout  = self.http.timeout,
+            deep     = self.deep,
+        )
+        return engine.scan(endpoint, params)
+    
     def _deduplicate(self, findings: list[ScanResult]) -> list[ScanResult]:
         """
         Deduplicates global findings (CORS, headers, server info) by vuln_id.
@@ -1152,3 +1233,5 @@ class RESTScanner:
 
         logger.info(f"[*] Deduplication: {len(findings)} raw findings -> {len(unique)} unique findings")
         return unique
+
+    
