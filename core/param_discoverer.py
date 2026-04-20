@@ -65,23 +65,7 @@ FALLBACK_PARAMS: list[str] = [
     "version", "v", "api", "mode", "config", "setting",
 ]
 
-# ── POST body discovery — common field names to probe ─────────────────────────
-POST_FIELD_CANDIDATES: list[str] = [
-    "email", "username", "password", "name", "title", "body",
-    "content", "message", "description", "phone", "address",
-    "first_name", "last_name", "firstName", "lastName",
-    "id", "user_id", "userId", "post_id", "postId",
-    "category", "type", "status", "role", "tag", "tags",
-    "url", "link", "image", "file", "avatar", "photo",
-    "amount", "price", "quantity", "total", "code",
-    "token", "otp", "pin", "secret", "key",
-    "date", "from", "to", "start_date", "end_date",
-    "limit", "offset", "page", "sort", "order", "filter",
-    "mechanic_code", "vin", "pincode", "number",
-    "model", "year", "color", "fuel_type",
-    "service_type", "problem_details",
-    "vehicleLocation", "mechanic_api",
-]
+
 
 # ── Path variable patterns ────────────────────────────────────────────────────
 _UUID_PATTERN  = re.compile(
@@ -113,7 +97,6 @@ class ParamDiscoverer:
       Source 1 — Wordlist (Arjun algorithm) : query params via chunk testing
       Source 2 — Response body analysis     : JSON keys from GET response
       Source 3 — Path variable extraction   : numeric/UUID segments in URL
-      Source 4 — POST field discovery       : fields from 422/400 error bodies
     """
 
     def __init__(
@@ -179,13 +162,7 @@ class ParamDiscoverer:
             if param not in all_params:
                 all_params[param] = reason
 
-        # ── Source 4 — POST field discovery ──────────────────────────────────
-        post_params = self._discover_post_fields(path)
-        for param, reason in post_params:
-            if param not in all_params:
-                all_params[param] = reason
-
-        # ── Summary ───────────────────────────────────────────────────────────
+                # ── Summary ───────────────────────────────────────────────────────────
         result = list(all_params.items())
 
         if result:
@@ -366,105 +343,6 @@ class ParamDiscoverer:
 
         return result
 
-    # =========================================================================
-    #  Source 4 — POST field discovery
-    # =========================================================================
-
-    def _discover_post_fields(
-        self, path: str
-    ) -> list[tuple[str, str]]:
-        """
-        Discovers POST body fields by:
-          1. Sending an empty POST → 422/400 may reveal required fields
-          2. Sending POST with all candidate fields → checks which are accepted
-          3. Parsing validation error messages for field names
-        """
-        http   = self._get_http()
-        result: list[tuple[str, str]] = []
-
-        # Step 1 — Empty POST body → look for validation errors
-        r_empty = http.post(path, json={})
-        if r_empty and r_empty.status_code in (400, 422):
-            fields = self._parse_validation_error(r_empty)
-            for field in fields:
-                result.append((field, "POST validation error"))
-                logger.debug(
-                    f"    [params] Source 4 — validation field: {field} -> {path}"
-                )
-
-        # Step 2 — POST with all candidates → check which fields affect response
-        if not result:
-            baseline_r    = http.post(path, json={})
-            baseline_feat = self._extract_features(baseline_r) if baseline_r else {}
-
-            for field in POST_FIELD_CANDIDATES:
-                test_body = {field: self._random_value()}
-                r = http.post(path, json=test_body)
-                if r is None:
-                    continue
-
-                feat     = self._extract_features(r)
-                differs, reason = self._features_differ(baseline_feat, feat)
-                if differs:
-                    result.append((field, f"POST response change ({reason})"))
-                    logger.debug(
-                        f"    [params] Source 4 — POST field: {field} ({reason}) -> {path}"
-                    )
-
-        return result
-
-    def _parse_validation_error(self, r) -> list[str]:
-        """
-        Parses 400/422 error responses to extract field names.
-
-        Handles common formats :
-          - FastAPI/Pydantic : {"detail": [{"loc": ["body", "email"], "msg": "..."}]}
-          - Express/Joi      : {"errors": {"email": "required"}}
-          - Django REST      : {"email": ["This field is required."]}
-          - Spring Boot      : {"errors": [{"field": "email", "message": "..."}]}
-        """
-        fields: list[str] = []
-
-        try:
-            body = r.json()
-        except Exception:
-            # Try to extract field names from plain text error
-            text = r.text or ""
-            matches = re.findall(r'"(\w+)":\s*\[?"[^"]*required', text, re.IGNORECASE)
-            return list(set(matches))
-
-        if not isinstance(body, dict):
-            return fields
-
-        # FastAPI/Pydantic format
-        detail = body.get("detail", [])
-        if isinstance(detail, list):
-            for item in detail:
-                if isinstance(item, dict):
-                    loc = item.get("loc", [])
-                    if isinstance(loc, list) and len(loc) >= 2:
-                        field = loc[-1]
-                        if isinstance(field, str) and field not in ("body", "query"):
-                            fields.append(field)
-
-        # Express/Joi format : {"errors": {"email": "...", "password": "..."}}
-        errors = body.get("errors", {})
-        if isinstance(errors, dict):
-            fields.extend(errors.keys())
-        elif isinstance(errors, list):
-            for item in errors:
-                if isinstance(item, dict):
-                    field = item.get("field") or item.get("param") or item.get("path")
-                    if field and isinstance(field, str):
-                        fields.append(field)
-
-        # Django REST format : {"email": ["This field is required."]}
-        for key, val in body.items():
-            if key not in ("detail", "errors", "message", "status", "code"):
-                if isinstance(val, list) and val:
-                    fields.append(key)
-
-        return list(set(fields))
 
     # =========================================================================
     #  Core Arjun algorithm helpers

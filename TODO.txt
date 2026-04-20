@@ -1,0 +1,4 @@
+TODO SQLi :
+→ Fix _get_injection_params() — valider que le param influence la réponse
+→ Tester sur Kali avec /rest/products/search?q=test
+→ Ajouter status, data à la blacklist
