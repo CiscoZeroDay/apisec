@@ -1,0 +1,6 @@
+https://github.com/nikitastupin/clairvoyance
+https://www.vaadata.com/blog/fr/apis-graphql-fonctionnement-vulnerabilites-et-attaques-courantes/#methodologie-de-test-dune-api-graphql
+https://apis.guru/graphql-voyager/
+https://github.com/doyensec/inql
+https://github.com/dolevf/graphql-cop
+https://cheatsheetseries.owasp.org/cheatsheets/GraphQL_Cheat_Sheet.html
