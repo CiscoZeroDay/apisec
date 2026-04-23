@@ -229,9 +229,14 @@ class APIDiscovery:
     #  PHASE 1 — GraphQL scoring
     # =========================================================================
 
-    def _score_graphql(self) -> tuple[int, list[str]]:
-        score:   int       = 0
-        reasons: list[str] = []
+    def _score_graphql(self) -> tuple[int, list[str], str | None]:
+        """
+        Returns (score, reasons, confirmed_path).
+        confirmed_path : path exact qui a repondu, None sinon.
+        """
+        score:          int       = 0
+        reasons:        list[str] = []
+        confirmed_path: str | None = None
 
         for path in GRAPHQL_PATHS:
             r = self.http.post(path, json={"query": "{ __typename }"})
@@ -245,6 +250,7 @@ class APIDiscovery:
                 body = self._safe_json(r)
                 if isinstance(body, dict) and ("data" in body or "errors" in body):
                     score += 2
+                    confirmed_path = path
                     reasons.append(f'Body "{path}" contains data/errors')
 
             r_intro = self.http.post(
@@ -257,11 +263,12 @@ class APIDiscovery:
                     isinstance(body_intro, dict)
                     and body_intro.get("data", {}).get("__schema")
                 ):
-                    score += 4
+                    score         += 4
+                    confirmed_path = path
                     reasons.append(f"Introspection __schema succeeded on {path}")
-                    return score, reasons
+                    return score, reasons, confirmed_path
 
-        return score, reasons
+        return score, reasons, confirmed_path
 
     # =========================================================================
     #  PHASE 1 — REST scoring
@@ -362,9 +369,9 @@ class APIDiscovery:
     def detect_api_type(self) -> DetectionResult:
         logger.info("[*] Detecting API type...")
 
-        soap_score, soap_reasons = self._score_soap()
-        gql_score,  gql_reasons  = self._score_graphql()
-        rest_score, rest_reasons = self._score_rest()
+        soap_score, soap_reasons               = self._score_soap()
+        gql_score,  gql_reasons, gql_confirmed = self._score_graphql()
+        rest_score, rest_reasons               = self._score_rest()
 
         logger.debug(f"    SOAP    score = {soap_score}")
         logger.debug(f"    GraphQL score = {gql_score}")
@@ -384,6 +391,7 @@ class APIDiscovery:
                 score      = gql_score,
                 reasons    = gql_reasons,
             )
+            result.gql_confirmed_path = gql_confirmed  # path exact confirmé
         elif rest_score >= _REST_THRESHOLD:
             result = DetectionResult(
                 api_type   = "REST",
@@ -704,15 +712,10 @@ class APIDiscovery:
             # Pour GraphQL, pas de crawl wordlist — on récupère le schéma
             from core.graphql_schema import fetch_graphql_schema
 
-            # Récupérer l'endpoint GraphQL déjà confirmé par _score_graphql
-            known_ep = None
-            for reason in detection.reasons:
-                for path in GRAPHQL_PATHS:
-                    if path in reason:
-                        known_ep = f"{self.base_url}{path}"
-                        break
-                if known_ep:
-                    break
+            # Récupérer l'endpoint GraphQL confirmé directement depuis _score_graphql
+            # gql_confirmed_path = path exact (ex: /graphql/v1) sans hardcoding
+            gql_path = getattr(detection, "gql_confirmed_path", None)
+            known_ep = f"{self.base_url}{gql_path}" if gql_path else None
 
             schema_result = fetch_graphql_schema(
                 base_url       = self.base_url,
@@ -722,7 +725,7 @@ class APIDiscovery:
             gql_schema = schema_result.to_dict()
 
             # L'endpoint GraphQL lui-même devient le seul "endpoint"
-            ep_url = schema_result.endpoint or known_ep or f"{self.base_url}/graphql"
+            ep_url = known_ep or schema_result.endpoint or f"{self.base_url}/graphql"
             if ep_url not in self.endpoints:
                 self.endpoints.append(ep_url)
 
