@@ -54,6 +54,7 @@ from typing import Optional, Callable
 from urllib.parse import urlparse
 
 from core.requester import Requester
+from exploit.xss_engine import XSSEngine
 from logger.logger import logger
 from core.models import ScanResult
 # =============================================================================
@@ -255,7 +256,7 @@ class RESTScanner:
         "sqli":        "_test_sqli",
         # "blind_sqli":  "_test_blind_sqli",
         # "nosql":       "_test_nosql",
-        # "xss":         "_test_xss",
+        "xss":         "_test_xss",
         # "ssrf":        "_test_ssrf",
         # "idor":        "_test_idor",
         # "mass_assign": "_test_mass_assignment",
@@ -1185,6 +1186,11 @@ class RESTScanner:
             deep     = self.deep,
         )
         return engine.scan(endpoint, params)
+   
+   # Méthode _test_xss() — même pattern que _test_sqli()
+    def _test_xss(self, endpoint):
+        engine = XSSEngine(base_url, token, timeout, deep)
+        return engine.scan(endpoint, params) 
     
     def _deduplicate(self, findings: list[ScanResult]) -> list[ScanResult]:
         """

@@ -357,7 +357,20 @@ def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
 
     try:
         if api_type == "GraphQL":
-            scanner = GraphQLScanner(base_url, timeout=args.timeout, token=token)
+            # Charger le schéma depuis endpoints.json si disponible
+            gql_schema = None
+            if hasattr(args, "input") and args.input:
+                try:
+                    disc_data  = load_discovery_result(args.input)
+                    gql_schema = disc_data.get("schema") if disc_data else None
+                except Exception:
+                    pass
+            scanner = GraphQLScanner(
+                base_url,
+                timeout = args.timeout,
+                token   = token,
+                schema  = gql_schema,
+            )
         elif api_type == "SOAP":
             scanner = SOAPScanner(base_url, timeout=args.timeout, token=token)
         else:
@@ -423,6 +436,21 @@ def cmd_params(args):
     if not disc:
         print("[!] Empty or malformed file.")
         sys.exit(1)
+
+    # GraphQL — les paramètres viennent du schéma, pas du param discoverer
+    if disc.get("api_type") == "GraphQL":
+        schema = disc.get("schema")
+        if schema:
+            q_count = len(schema.get("queries", []))
+            m_count = len(schema.get("mutations", []))
+            print(f"[i] API GraphQL détectée — param discovery non nécessaire.")
+            print(f"    Le schéma contient {q_count} queries et {m_count} mutations.")
+            print(f"    Les arguments sont déjà dans endpoints.json → schema.queries[].args")
+            print(f"[→] Lance directement : apisec scan --input {args.input}")
+        else:
+            print("[i] API GraphQL détectée — aucun schéma dans le fichier.")
+            print("    Relance discovery pour récupérer le schéma : apisec discovery --url URL")
+        sys.exit(0)
 
     endpoints = disc.get("endpoints", [])
     if not endpoints:

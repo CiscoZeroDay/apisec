@@ -697,24 +697,59 @@ class APIDiscovery:
         # 3. Swagger
         swagger_found = self.parse_swagger()
 
-        # 4. Crawl
-        limit = 50 if mode == "quick" else None
-        self.crawl_endpoints(wordlist_path, limit=limit)
+        # 4. Crawl (REST/SOAP) — ou Schema fetch (GraphQL)
+        gql_schema = None
 
-        # Upgrade Unknown → REST if crawl found JSON endpoints
-        # Handles SPAs where root returns HTML but APIs are on sub-paths
-        if detection.api_type == "Unknown" and len(self.endpoints) > 0:
+        if detection.api_type == "GraphQL":
+            # Pour GraphQL, pas de crawl wordlist — on récupère le schéma
+            from core.graphql_schema import fetch_graphql_schema
+
+            # Récupérer l'endpoint GraphQL déjà confirmé par _score_graphql
+            known_ep = None
+            for reason in detection.reasons:
+                for path in GRAPHQL_PATHS:
+                    if path in reason:
+                        known_ep = f"{self.base_url}{path}"
+                        break
+                if known_ep:
+                    break
+
+            schema_result = fetch_graphql_schema(
+                base_url       = self.base_url,
+                timeout        = self.http.timeout,
+                known_endpoint = known_ep,
+            )
+            gql_schema = schema_result.to_dict()
+
+            # L'endpoint GraphQL lui-même devient le seul "endpoint"
+            ep_url = schema_result.endpoint or known_ep or f"{self.base_url}/graphql"
+            if ep_url not in self.endpoints:
+                self.endpoints.append(ep_url)
+
             logger.info(
-                f"[*] API type upgraded to REST — "
-                f"{len(self.endpoints)} endpoint(s) found during crawl"
+                f"[+] GraphQL schema — method: {schema_result.method} | "
+                f"queries: {len(schema_result.queries)} | "
+                f"mutations: {len(schema_result.mutations)}"
             )
-            detection.api_type   = "REST"
-            detection.confidence = 0.5
-            detection.score      = max(detection.score, 2)
-            detection.reasons.append(
-                f"REST confirmed from {len(self.endpoints)} crawled endpoint(s)"
-            )
-            self.api_type = "REST"
+
+        else:
+            # REST / SOAP / Unknown → crawl wordlist classique
+            limit = 50 if mode == "quick" else None
+            self.crawl_endpoints(wordlist_path, limit=limit)
+
+            # Upgrade Unknown → REST if crawl found JSON endpoints
+            if detection.api_type == "Unknown" and len(self.endpoints) > 0:
+                logger.info(
+                    f"[*] API type upgraded to REST — "
+                    f"{len(self.endpoints)} endpoint(s) found during crawl"
+                )
+                detection.api_type   = "REST"
+                detection.confidence = 0.5
+                detection.score      = max(detection.score, 2)
+                detection.reasons.append(
+                    f"REST confirmed from {len(self.endpoints)} crawled endpoint(s)"
+                )
+                self.api_type = "REST"
 
         # Merge without duplicates — swagger first
         all_endpoints = list(dict.fromkeys(swagger_found + self.endpoints))
@@ -729,4 +764,5 @@ class APIDiscovery:
             "swagger_endpoints": swagger_found,
             "crawled_endpoints": self.endpoints,
             "target_url":        self.base_url,
+            "schema":            gql_schema,       # None pour REST/SOAP
         }

@@ -125,12 +125,17 @@ class GraphQLScanner:
     def __init__(
         self,
         base_url: str,
-        timeout: int = 5,
-        token: Optional[str] = None,
+        timeout:  int = 5,
+        token:    Optional[str] = None,
+        schema:   Optional[dict] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.http     = Requester(self.base_url, timeout=timeout)
-        self._schema: Optional[dict] = None   # cache du schéma introspection
+
+        # Cache du schéma — pré-chargé depuis discovery si disponible
+        # Evite de refaire l introspection au moment du scan
+        self._schema: Optional[dict] = schema.get("raw_introspection") if schema else None
+        self._gql_schema = schema   # objet GraphQLSchemaResult.to_dict() complet
 
         if token:
             self.http.set_token(token)
