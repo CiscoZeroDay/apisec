@@ -1,553 +1,529 @@
-# core/graphql_export.py
+# core/graphql_schema.py
 """
-GraphQL Schema Exporter
+GraphQLSchema — Récupération du schéma GraphQL.
 
-Converts a GraphQL schema (stored in endpoints.json after discovery) into
-formats ready to paste into visual tools without any extra manipulation:
+Deux stratégies, dans l'ordre :
+  1. Introspection complète  — si elle est activée sur le serveur
+  2. Oracle (clairvoyance)   — si l'introspection est bloquée :
+       envoie des noms de champs invalides et lit les suggestions
+       "Did you mean X?" dans les messages d'erreur GraphQL
 
-  - Voyager JSON  : introspection payload accepted by GraphQL Voyager
-                    (graphql-kit.com/graphql-voyager → Change Schema → Introspection)
-  - SDL           : Schema Definition Language accepted by GraphQL Voyager (SDL tab),
-                    Nathan Randal's visualizer, and most GraphQL IDEs
+Résultat : un dict `GraphQLSchemaResult` utilisable par GraphQLScanner
+et sérialisable dans endpoints.json.
 
-Usage (programmatic):
-    exporter = GraphQLSchemaExporter(schema_dict)
-    exporter.export(output_dir=".", fmt="both")
-
-Usage (CLI):
-    apisec schema --input endpoints.json --format both --output-dir ./schema_export
+Structure de sortie :
+  {
+    "endpoint":       "https://api.example.com/graphql",
+    "method":         "introspection" | "oracle" | "none",
+    "queries":        [{"name": "user", "args": ["id", "email"]}, ...],
+    "mutations":      [{"name": "createUser", "args": ["input"]}, ...],
+    "types":          ["User", "Post", "Order", ...],
+    "raw_introspection": { ... } | None   # réponse brute si dispo
+  }
 """
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Optional
 
+from core.requester import Requester
 from logger.logger import logger
 
 
-# -----------------------------------------------------------------------------
-#  Result dataclass
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+#  Constantes
+# ─────────────────────────────────────────────────────────────────────────────
+
+GRAPHQL_ENDPOINTS: list[str] = [
+    "/graphql",
+    "/api/graphql",
+    "/v1/graphql",
+    "/graphql/v1",
+    "/query",
+    "/gql",
+]
+
+# Requête d'introspection complète
+# Standard full introspection query — compatible with GraphQL Voyager,
+# Nathan Randal visualizer, and all GraphQL tooling.
+# Includes type information on fields and args so visual tools can
+# resolve relationships between types without errors.
+_INTROSPECTION_QUERY = """
+{
+  __schema {
+    queryType        { name }
+    mutationType     { name }
+    subscriptionType { name }
+    types {
+      kind
+      name
+      description
+      fields(includeDeprecated: true) {
+        name
+        description
+        isDeprecated
+        deprecationReason
+        args {
+          name
+          description
+          defaultValue
+          type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+        }
+        type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+      }
+      inputFields {
+        name
+        description
+        defaultValue
+        type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+      }
+      interfaces { kind name ofType { kind name ofType { kind name } } }
+      enumValues(includeDeprecated: true) {
+        name
+        description
+        isDeprecated
+        deprecationReason
+      }
+      possibleTypes { kind name ofType { kind name ofType { kind name } } }
+    }
+    directives {
+      name
+      description
+      locations
+      args {
+        name
+        description
+        defaultValue
+        type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+      }
+    }
+  }
+}
+"""
+
+# Probe rapide pour vérifier si l'introspection répond
+_INTROSPECTION_PROBE = "{ __schema { queryType { name } } }"
+
+# Champs internes GraphQL à ignorer dans le schéma
+_BUILTIN_PREFIXES = ("__",)
+
+# Wordlists embarquées (chemin relatif depuis la racine du projet)
+_WL_QUERIES    = "wordlists/gql-queries-1k.txt"
+_WL_MUTATIONS  = "wordlists/gql-mutations-1k.txt"
+_WL_ORACLE     = "wordlists/gql-oracle.txt"
+
+# Regex pour extraire les suggestions GraphQL ("Did you mean X?")
+_SUGGESTION_PATTERNS = [
+    re.compile(r"""Did you mean ['\"](?P<field>[_0-9A-Za-z]+)['\"]"""),
+    re.compile(r"""Did you mean ['\"](?P<one>[_0-9A-Za-z]+)['\"] or ['\"](?P<two>[_0-9A-Za-z]+)['\"]"""),
+    re.compile(r"""Did you mean (?P<multi>(?:['\"][_0-9A-Za-z]+['\"],?\s*)+)"""),
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Dataclass de résultat
+# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
-class ExportResult:
-    """Holds the paths of generated export files."""
+class FieldInfo:
+    """Un champ (query ou mutation) avec ses arguments."""
+    name: str
+    args: list[str] = field(default_factory=list)
 
-    voyager_path: Optional[str] = None   # {"data": {"__schema": ...}} for GraphQL Voyager
-    nathan_path:  Optional[str] = None   # {"__schema": ...} for Nathan Randal
-    sdl_path:     Optional[str] = None   # SDL .graphql file
-    fmt:          str           = "both"
+    def to_dict(self) -> dict:
+        return {"name": self.name, "args": self.args}
+
+
+@dataclass
+class GraphQLSchemaResult:
+    """Résultat complet de la récupération du schéma."""
+
+    endpoint:          str
+    method:            str                    # "introspection" | "oracle" | "none"
+    queries:           list[FieldInfo]        = field(default_factory=list)
+    mutations:         list[FieldInfo]        = field(default_factory=list)
+    types:             list[str]              = field(default_factory=list)
+    raw_introspection: Optional[dict]         = None
+
+    # ── Accesseurs pratiques ──────────────────────────────────────────────────
 
     @property
-    def files(self) -> list[str]:
-        return [p for p in (self.voyager_path, self.nathan_path, self.sdl_path) if p]
+    def query_names(self) -> list[str]:
+        return [q.name for q in self.queries]
 
-    def __str__(self) -> str:
-        lines = []
-        if self.voyager_path:
-            lines.append(
-                f"  Voyager JSON : {self.voyager_path}\n"
-                "    → graphql-kit.com/graphql-voyager\n"
-                "      Change Schema → Introspection → paste"
-            )
-        if self.nathan_path:
-            lines.append(
-                f"  Nathan JSON  : {self.nathan_path}\n"
-                "    → nathanrandal.com/graphql-visualizer\n"
-                "      paste directly"
-            )
-        if self.sdl_path:
-            lines.append(
-                f"  SDL          : {self.sdl_path}\n"
-                "    → graphql-kit.com/graphql-voyager\n"
-                "      Change Schema → SDL → paste"
-            )
-        return "\n".join(lines)
+    @property
+    def mutation_names(self) -> list[str]:
+        return [m.name for m in self.mutations]
 
+    @property
+    def has_schema(self) -> bool:
+        return bool(self.queries or self.mutations or self.types)
 
-# -----------------------------------------------------------------------------
-#  GraphQLSchemaExporter
-# -----------------------------------------------------------------------------
+    # ── Sérialisation JSON ────────────────────────────────────────────────────
 
-class GraphQLSchemaExporter:
-    """
-    Converts a schema dict (from endpoints.json → schema) into
-    Voyager-ready JSON and/or SDL.
-
-    Args:
-        schema_dict : the 'schema' value from endpoints.json
-    """
-
-    def __init__(self, schema_dict: dict) -> None:
-        if not isinstance(schema_dict, dict):
-            raise ValueError("schema_dict must be a dict (endpoints.json → schema)")
-        self._schema = schema_dict
-
-    # -------------------------------------------------------------------------
-    #  Public API
-    # -------------------------------------------------------------------------
-
-    def export(
-        self,
-        output_dir: str = ".",
-        fmt:        str = "both",
-    ) -> ExportResult:
-        """
-        Generate export files.
-
-        Args:
-            output_dir : directory where files are written
-            fmt        : "voyager" | "sdl" | "both"
-
-        Returns:
-            ExportResult with paths of generated files
-        """
-        os.makedirs(output_dir, exist_ok=True)
-        result = ExportResult(fmt=fmt)
-
-        if fmt in ("voyager", "both"):
-            path = self._export_voyager(output_dir)
-            if path:
-                result.voyager_path = path
-
-            path = self._export_nathan(output_dir)
-            if path:
-                result.nathan_path = path
-
-        if fmt in ("sdl", "both"):
-            path = self._export_sdl(output_dir)
-            if path:
-                result.sdl_path = path
-
-        return result
-
-    # -------------------------------------------------------------------------
-    #  Voyager JSON export
-    # -------------------------------------------------------------------------
-
-    def _export_voyager(self, output_dir: str) -> Optional[str]:
-        """
-        Write the introspection payload in the exact format GraphQL Voyager expects.
-
-        Voyager expects the raw introspection response:
-            { "data": { "__schema": { ... } } }
-
-        If raw_introspection is available (from fetch), use it directly.
-        Otherwise, reconstruct a minimal introspection from the parsed schema.
-        """
-        raw = self._schema.get("raw_introspection")
-
-        if raw and isinstance(raw, dict) and "data" in raw:
-            # Perfect — use the original introspection response as-is
-            payload = raw
-            logger.debug("[export] Voyager: using original raw_introspection")
-
-        elif raw and isinstance(raw, dict) and "__schema" in raw:
-            # Wrap in data envelope if missing
-            payload = {"data": raw}
-            logger.debug("[export] Voyager: wrapping __schema in data envelope")
-
-        else:
-            # Reconstruct from parsed schema fields
-            logger.debug("[export] Voyager: reconstructing introspection from parsed schema")
-            payload = self._reconstruct_introspection()
-
-        path = os.path.join(output_dir, "schema_voyager.json")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-            logger.info(f"[export] Voyager JSON → {path}")
-            return path
-        except OSError as e:
-            logger.error(f"[export] Cannot write {path}: {e}")
-            return None
-
-    def _reconstruct_introspection(self) -> dict:
-        """
-        Build a minimal introspection payload from the parsed schema fields.
-        Used as fallback when raw_introspection is not available (oracle method).
-        """
-        queries   = self._schema.get("queries",   [])
-        mutations = self._schema.get("mutations", [])
-        types     = self._schema.get("types",     [])
-
-        # Build Query type fields
-        query_fields = [
-            {
-                "name": q["name"],
-                "args": [{"name": a} for a in q.get("args", [])],
-                "isDeprecated": False,
-                "deprecationReason": None,
-            }
-            for q in queries
-        ]
-
-        # Build Mutation type fields
-        mutation_fields = [
-            {
-                "name": m["name"],
-                "args": [{"name": a} for a in m.get("args", [])],
-                "isDeprecated": False,
-                "deprecationReason": None,
-            }
-            for m in mutations
-        ]
-
-        # Build types list
-        all_types = []
-
-        if query_fields:
-            all_types.append({
-                "kind":   "OBJECT",
-                "name":   "Query",
-                "fields": query_fields,
-                "inputFields":   None,
-                "interfaces":    [],
-                "enumValues":    None,
-                "possibleTypes": None,
-            })
-
-        if mutation_fields:
-            all_types.append({
-                "kind":   "OBJECT",
-                "name":   "Mutation",
-                "fields": mutation_fields,
-                "inputFields":   None,
-                "interfaces":    [],
-                "enumValues":    None,
-                "possibleTypes": None,
-            })
-
-        # Add known scalar types
-        for type_name in types:
-            if type_name not in ("Query", "Mutation") and not type_name.startswith("__"):
-                all_types.append({
-                    "kind":          "OBJECT",
-                    "name":          type_name,
-                    "fields":        [],
-                    "inputFields":   None,
-                    "interfaces":    [],
-                    "enumValues":    None,
-                    "possibleTypes": None,
-                })
-
+    def to_dict(self) -> dict:
         return {
-            "data": {
-                "__schema": {
-                    "queryType":        {"name": "Query"}    if query_fields    else None,
-                    "mutationType":     {"name": "Mutation"} if mutation_fields else None,
-                    "subscriptionType": None,
-                    "types":            all_types,
-                    "directives":       [],
-                }
-            }
+            "endpoint":          self.endpoint,
+            "method":            self.method,
+            "queries":           [q.to_dict() for q in self.queries],
+            "mutations":         [m.to_dict() for m in self.mutations],
+            "types":             self.types,
+            "raw_introspection": self.raw_introspection,
         }
 
-    # -------------------------------------------------------------------------
-    #  Nathan Randal export
-    # -------------------------------------------------------------------------
+    @staticmethod
+    def from_dict(d: dict) -> "GraphQLSchemaResult":
+        return GraphQLSchemaResult(
+            endpoint          = d.get("endpoint", ""),
+            method            = d.get("method", "none"),
+            queries           = [FieldInfo(**q) for q in d.get("queries", [])],
+            mutations         = [FieldInfo(**m) for m in d.get("mutations", [])],
+            types             = d.get("types", []),
+            raw_introspection = d.get("raw_introspection"),
+        )
 
-    def _export_nathan(self, output_dir: str) -> Optional[str]:
+    def __str__(self) -> str:
+        return (
+            f"GraphQLSchema [{self.method}] — {self.endpoint}\n"
+            f"  queries   : {len(self.queries)}\n"
+            f"  mutations : {len(self.mutations)}\n"
+            f"  types     : {len(self.types)}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  GraphQLSchemaFetcher
+# ─────────────────────────────────────────────────────────────────────────────
+
+class GraphQLSchemaFetcher:
+    """
+    Récupère le schéma GraphQL d'un endpoint.
+
+    Utilisation :
+        fetcher = GraphQLSchemaFetcher("https://api.example.com", token="...")
+        result  = fetcher.fetch()           # tente introspection puis oracle
+        result  = fetcher.fetch(endpoint="/api/graphql")   # endpoint explicite
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout:  int = 5,
+        token:    Optional[str] = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.http     = Requester(self.base_url, timeout=timeout)
+
+        if token:
+            self.http.set_token(token)
+
+    # =========================================================================
+    #  Point d'entrée public
+    # =========================================================================
+
+    def fetch(self, endpoint: Optional[str] = None) -> GraphQLSchemaResult:
         """
-        Write the introspection payload in the exact format Nathan Randal expects.
+        Tente de récupérer le schéma GraphQL.
 
-        Nathan Randal visualizer (nathanrandal.com/graphql-visualizer) expects
-        the __schema object directly — without the "data" envelope:
-            { "__schema": { ... } }
+        Ordre :
+          1. Si endpoint fourni → tente introspection sur cet endpoint
+          2. Sinon → sonde les endpoints courants
+          3. Si introspection bloquée → oracle (clairvoyance)
+
+        Returns:
+            GraphQLSchemaResult (method="none" si rien trouvé)
         """
-        raw = self._schema.get("raw_introspection")
+        logger.info("[*] GraphQL schema fetch — démarrage")
 
-        if raw and isinstance(raw, dict) and "data" in raw:
-            # Strip the "data" wrapper — Nathan wants {"__schema": ...} directly
-            schema_obj = raw["data"].get("__schema")
-        elif raw and isinstance(raw, dict) and "__schema" in raw:
-            schema_obj = raw["__schema"]
-        else:
-            # Reconstruct and unwrap
-            reconstructed = self._reconstruct_introspection()
-            schema_obj = reconstructed.get("data", {}).get("__schema")
-
-        if not schema_obj:
-            return None
-
-        payload = {"__schema": schema_obj}
-
-        path = os.path.join(output_dir, "schema_nathan.json")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-            return path
-        except OSError as e:
-            return None
-
-    # -------------------------------------------------------------------------
-    #  SDL export
-    # -------------------------------------------------------------------------
-
-    def _export_sdl(self, output_dir: str) -> Optional[str]:
-        """
-        Generate a Schema Definition Language (.graphql) file.
-
-        SDL is human-readable and accepted by:
-          - GraphQL Voyager (SDL tab)
-          - Nathan Randal's visualizer
-          - GraphQL Playground / Insomnia / Postman
-        """
-        sdl = self._build_sdl()
-        if not sdl.strip():
-            logger.warning("[export] SDL: empty schema — nothing to export")
-            return None
-
-        path = os.path.join(output_dir, "schema.graphql")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(sdl)
-            logger.info(f"[export] SDL → {path}")
-            return path
-        except OSError as e:
-            logger.error(f"[export] Cannot write {path}: {e}")
-            return None
-
-    def _build_sdl(self) -> str:
-        """
-        Build SDL from the parsed schema.
-
-        Priority:
-          1. Build from raw_introspection types (most complete)
-          2. Fall back to parsed queries/mutations/types
-        """
-        raw = self._schema.get("raw_introspection")
-
-        if raw:
-            return self._sdl_from_introspection(raw)
-
-        return self._sdl_from_parsed()
-
-    def _sdl_from_introspection(self, raw: dict) -> str:
-        """Convert raw introspection response to SDL."""
-        lines: list[str] = [
-            "# GraphQL Schema — generated by APISec",
-            "# Source: introspection",
-            "",
+        # Endpoints à sonder
+        candidates = [endpoint] if endpoint else [
+            f"{self.base_url}{p}" for p in GRAPHQL_ENDPOINTS
         ]
 
-        schema_data = (
-            raw.get("data", {}).get("__schema")
-            or raw.get("__schema")
-            or {}
-        )
-        all_types = schema_data.get("types", [])
+        # ── Stratégie 1 : Introspection ───────────────────────────────────────
+        for ep in candidates:
+            result = self._try_introspection(ep)
+            if result is not None:
+                logger.info(f"[+] Schéma récupéré par introspection — {ep}")
+                logger.info(f"    queries: {len(result.queries)} | mutations: {len(result.mutations)} | types: {len(result.types)}")
+                return result
 
-        # Skip built-in introspection types
-        skip_prefixes = ("__",)
-        skip_scalars  = {"String", "Int", "Float", "Boolean", "ID"}
+        logger.info("[*] Introspection bloquée — tentative oracle (clairvoyance)")
+
+        # ── Stratégie 2 : Oracle (clairvoyance) ──────────────────────────────
+        for ep in candidates:
+            result = self._try_oracle(ep)
+            if result is not None and result.has_schema:
+                logger.info(f"[+] Schéma partiel via oracle — {ep}")
+                logger.info(f"    queries: {len(result.queries)} | mutations: {len(result.mutations)}")
+                return result
+
+        logger.warning("[!] Schéma GraphQL non récupérable (introspection off, oracle sans résultat)")
+        return GraphQLSchemaResult(
+            endpoint = candidates[0] if candidates else self.base_url,
+            method   = "none",
+        )
+
+    # =========================================================================
+    #  Stratégie 1 — Introspection complète
+    # =========================================================================
+
+    def _try_introspection(self, endpoint: str) -> Optional[GraphQLSchemaResult]:
+        """
+        Tente l'introspection sur un endpoint.
+        Retourne None si l'introspection est bloquée ou l'endpoint inexistant.
+        """
+        path = self._to_path(endpoint)
+
+        # Probe rapide avant la requête complète
+        r_probe = self.http.post(path, json={"query": _INTROSPECTION_PROBE})
+        if not self._is_gql_response(r_probe):
+            return None
+
+        # Introspection complète
+        r = self.http.post(path, json={"query": _INTROSPECTION_QUERY})
+        if not self._is_gql_response(r):
+            return None
+
+        try:
+            body = r.json()
+        except Exception:
+            return None
+
+        schema_data = body.get("data", {}).get("__schema")
+        if not schema_data:
+            return None
+
+        return self._parse_introspection(endpoint, body)
+
+    def _parse_introspection(self, endpoint: str, raw: dict) -> GraphQLSchemaResult:
+        """Parse la réponse d'introspection en GraphQLSchemaResult."""
+
+        schema      = raw.get("data", {}).get("__schema", {})
+        query_type  = (schema.get("queryType")    or {}).get("name", "Query")
+        mut_type    = (schema.get("mutationType") or {}).get("name", "Mutation")
+        all_types   = schema.get("types", [])
+
+        queries:   list[FieldInfo] = []
+        mutations: list[FieldInfo] = []
+        type_names: list[str]      = []
 
         for t in all_types:
             name = t.get("name", "")
-            kind = t.get("kind", "")
 
-            if any(name.startswith(p) for p in skip_prefixes):
-                continue
-            if name in skip_scalars:
+            # Ignorer les types internes (__Schema, __Type…)
+            if any(name.startswith(p) for p in _BUILTIN_PREFIXES):
                 continue
 
-            fields  = t.get("fields") or []
-            ev      = t.get("enumValues") or []
+            type_names.append(name)
+            fields = t.get("fields") or []
 
-            if kind == "OBJECT" and fields:
-                lines.append(f"type {name} {{")
-                for field in fields:
-                    fname = field.get("name", "")
-                    fargs = field.get("args", []) or []
-                    ftype = self._resolve_field_type(field)
+            if name == query_type:
+                for f in fields:
+                    queries.append(FieldInfo(
+                        name = f["name"],
+                        args = [a["name"] for a in (f.get("args") or [])],
+                    ))
 
-                    if fargs:
-                        arg_str = ", ".join(
-                            f"{a['name']}: {self._resolve_arg_type(a)}"
-                            for a in fargs
-                        )
-                        lines.append(f"  {fname}({arg_str}): {ftype}")
-                    else:
-                        lines.append(f"  {fname}: {ftype}")
-                lines.append("}")
-                lines.append("")
+            elif name == mut_type:
+                for f in fields:
+                    mutations.append(FieldInfo(
+                        name = f["name"],
+                        args = [a["name"] for a in (f.get("args") or [])],
+                    ))
 
-            elif kind == "ENUM" and ev:
-                lines.append(f"enum {name} {{")
-                for val in ev:
-                    lines.append(f"  {val.get('name', '')}")
-                lines.append("}")
-                lines.append("")
+        return GraphQLSchemaResult(
+            endpoint          = endpoint,
+            method            = "introspection",
+            queries           = queries,
+            mutations         = mutations,
+            types             = type_names,
+            raw_introspection = raw,
+        )
 
-            elif kind == "INPUT_OBJECT":
-                input_fields = t.get("inputFields") or []
-                if input_fields:
-                    lines.append(f"input {name} {{")
-                    for field in input_fields:
-                        fname = field.get("name", "")
-                        ftype = self._resolve_field_type(field)
-                        lines.append(f"  {fname}: {ftype}")
-                    lines.append("}")
-                    lines.append("")
+    # =========================================================================
+    #  Stratégie 2 — Oracle / Clairvoyance
+    # =========================================================================
 
-            elif kind == "SCALAR" and name not in skip_scalars:
-                lines.append(f"scalar {name}")
-                lines.append("")
-
-            elif kind == "INTERFACE" and fields:
-                lines.append(f"interface {name} {{")
-                for field in fields:
-                    fname = field.get("name", "")
-                    ftype = self._resolve_field_type(field)
-                    lines.append(f"  {fname}: {ftype}")
-                lines.append("}")
-                lines.append("")
-
-        return "\n".join(lines)
-
-    def _sdl_from_parsed(self) -> str:
+    def _try_oracle(self, endpoint: str) -> Optional[GraphQLSchemaResult]:
         """
-        Build a minimal SDL from the parsed schema fields.
-        Used when raw_introspection is not available (oracle method).
+        Bruteforce les champs disponibles via les suggestions d'erreur GraphQL.
+
+        Principe (clairvoyance) :
+          - Envoie { <mot_invalide> } → GraphQL répond parfois
+            "Cannot query field 'X'. Did you mean 'user'?"
+          - On extrait les suggestions pour découvrir les champs réels.
         """
-        queries   = self._schema.get("queries",   [])
-        mutations = self._schema.get("mutations", [])
-        types     = self._schema.get("types",     [])
+        path = self._to_path(endpoint)
 
-        lines: list[str] = [
-            "# GraphQL Schema — generated by APISec",
-            "# Source: oracle (partial schema — field types unavailable)",
-            "",
-        ]
+        # Vérifier que l'endpoint répond au GraphQL
+        r_check = self.http.post(path, json={"query": "{ __typename }"})
+        if not self._is_gql_response(r_check):
+            return None
 
-        if queries:
-            lines.append("type Query {")
-            for q in queries:
-                args = q.get("args", [])
-                if args:
-                    arg_str = ", ".join(f"{a}: String" for a in args)
-                    lines.append(f"  {q['name']}({arg_str}): String")
-                else:
-                    lines.append(f"  {q['name']}: String")
-            lines.append("}")
-            lines.append("")
+        # Charger la wordlist oracle
+        words = self._load_wordlist(_WL_ORACLE)
+        if not words:
+            # Fallback : utiliser les wordlists queries + mutations
+            words = self._load_wordlist(_WL_QUERIES) + self._load_wordlist(_WL_MUTATIONS)
 
-        if mutations:
-            lines.append("type Mutation {")
-            for m in mutations:
-                args = m.get("args", [])
-                if args:
-                    arg_str = ", ".join(f"{a}: String" for a in args)
-                    lines.append(f"  {m['name']}({arg_str}): String")
-                else:
-                    lines.append(f"  {m['name']}: String")
-            lines.append("}")
-            lines.append("")
+        if not words:
+            logger.warning("[oracle] Aucune wordlist disponible")
+            return None
 
-        # Known types (no field details in oracle mode)
-        skip = {"Query", "Mutation", "Boolean", "Int", "String", "Float", "ID"}
-        for t in types:
-            if t not in skip and not t.startswith("__"):
-                lines.append(f"type {t} {{")
-                lines.append("  # fields unavailable — schema discovered via oracle")
-                lines.append("}")
-                lines.append("")
+        logger.info(f"[*] Oracle — {len(words)} mots → {endpoint}")
 
-        return "\n".join(lines)
+        discovered_queries:   set[str] = set()
+        discovered_mutations: set[str] = set()
 
-    # -------------------------------------------------------------------------
-    #  Type resolution helpers
-    # -------------------------------------------------------------------------
+        # ── Phase 1 : découverte des queries ─────────────────────────────────
+        query_words = self._load_wordlist(_WL_QUERIES) or words[:500]
+        for word in query_words:
+            suggestions = self._probe_field(path, word, context="query")
+            discovered_queries.update(suggestions)
 
-    def _resolve_field_type(self, field: dict) -> str:
+        # ── Phase 2 : découverte des mutations ───────────────────────────────
+        mutation_words = self._load_wordlist(_WL_MUTATIONS) or words[:500]
+        for word in mutation_words:
+            suggestions = self._probe_field(path, word, context="mutation")
+            discovered_mutations.update(suggestions)
+
+        if not discovered_queries and not discovered_mutations:
+            logger.info("[oracle] Aucune suggestion reçue — serveur ne révèle pas ses champs")
+            return GraphQLSchemaResult(endpoint=endpoint, method="oracle")
+
+        queries   = [FieldInfo(name=q) for q in sorted(discovered_queries)]
+        mutations = [FieldInfo(name=m) for m in sorted(discovered_mutations)]
+
+        return GraphQLSchemaResult(
+            endpoint  = endpoint,
+            method    = "oracle",
+            queries   = queries,
+            mutations = mutations,
+        )
+
+    def _probe_field(self, path: str, word: str, context: str = "query") -> set[str]:
         """
-        Resolve the SDL type string for a field or input value.
-        GraphQL wraps types in NON_NULL and LIST wrappers.
+        Envoie un champ invalide et extrait les suggestions de l'erreur.
+
+        Args:
+            path    : chemin de l'endpoint GraphQL
+            word    : mot à envoyer (ex: "usr" → suggère "user")
+            context : "query" ou "mutation"
+
+        Returns:
+            set de champs suggérés par le serveur
         """
-        type_ref = field.get("type")
-        if not type_ref:
-            return "String"
-        return self._unwrap_type(type_ref)
+        if context == "mutation":
+            query = f"mutation {{ {word} }}"
+        else:
+            query = f"{{ {word} }}"
 
-    def _resolve_arg_type(self, arg: dict) -> str:
-        type_ref = arg.get("type")
-        if not type_ref:
-            return "String"
-        return self._unwrap_type(type_ref)
+        r = self.http.post(path, json={"query": query})
+        if r is None:
+            return set()
 
-    def _unwrap_type(self, type_ref: dict, suffix: str = "") -> str:
+        try:
+            body   = r.json()
+            errors = body.get("errors", [])
+        except Exception:
+            return set()
+
+        suggestions: set[str] = set()
+        for error in errors:
+            message = error.get("message", "")
+            suggestions.update(self._extract_suggestions(message))
+
+        return suggestions
+
+    def _extract_suggestions(self, message: str) -> set[str]:
+        """Extrait les noms suggérés depuis un message d'erreur GraphQL."""
+        found: set[str] = set()
+
+        for pattern in _SUGGESTION_PATTERNS:
+            for m in pattern.finditer(message):
+                gd = m.groupdict()
+
+                if "field" in gd and gd["field"]:
+                    found.add(gd["field"])
+                if "one"   in gd and gd["one"]:
+                    found.add(gd["one"])
+                if "two"   in gd and gd["two"]:
+                    found.add(gd["two"])
+                if "multi" in gd and gd["multi"]:
+                    # "Did you mean 'a', 'b', 'c'"
+                    for word in re.findall(r"[_0-9A-Za-z]+", gd["multi"]):
+                        found.add(word)
+                if "last"  in gd and gd["last"]:
+                    found.add(gd["last"])
+
+        return found
+
+    # =========================================================================
+    #  Helpers
+    # =========================================================================
+
+    def _to_path(self, endpoint: str) -> str:
+        """Convertit une URL absolue en chemin relatif."""
+        return endpoint.replace(self.base_url, "") or "/"
+
+    def _is_gql_response(self, r) -> bool:
+        """True si la réponse ressemble à une réponse GraphQL valide."""
+        if r is None:
+            return False
+        if r.status_code not in (200, 400):
+            return False
+        try:
+            body = r.json()
+            return "data" in body or "errors" in body
+        except Exception:
+            return False
+
+    def _load_wordlist(self, relative_path: str) -> list[str]:
         """
-        Recursively unwrap NON_NULL / LIST wrappers and return SDL type string.
-
-        Examples:
-          NON_NULL(String)     → "String!"
-          LIST(NON_NULL(Int))  → "[Int!]"
-          NON_NULL(LIST(User)) → "[User]!"
+        Charge une wordlist depuis un chemin relatif à la racine du projet.
+        Retourne [] si le fichier n'existe pas.
         """
-        if not isinstance(type_ref, dict):
-            return "String"
+        # Résolution depuis le répertoire du fichier courant (core/)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        full = os.path.join(root, relative_path)
 
-        kind    = type_ref.get("kind", "")
-        name    = type_ref.get("name")
-        of_type = type_ref.get("ofType")
+        if not os.path.isfile(full):
+            logger.debug(f"[schema] Wordlist introuvable : {full}")
+            return []
 
-        if kind == "NON_NULL":
-            inner = self._unwrap_type(of_type) if of_type else "String"
-            return f"{inner}!{suffix}"
-
-        if kind == "LIST":
-            inner = self._unwrap_type(of_type) if of_type else "String"
-            return f"[{inner}]{suffix}"
-
-        # Scalar / Object / Enum / Interface — leaf type
-        return name or "String"
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore") as f:
+                return [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            logger.debug(f"[schema] Erreur lecture wordlist {full} : {e}")
+            return []
 
 
-# -----------------------------------------------------------------------------
-#  Convenience function — used by main.py
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+#  Fonction utilitaire — usage direct depuis discovery.py
+# ─────────────────────────────────────────────────────────────────────────────
 
-def export_schema(
-    endpoints_json_path: str,
-    output_dir:          str  = ".",
-    fmt:                 str  = "both",
-) -> Optional[ExportResult]:
+def fetch_graphql_schema(
+    base_url:        str,
+    timeout:         int = 5,
+    token:           Optional[str] = None,
+    known_endpoint:  Optional[str] = None,
+) -> GraphQLSchemaResult:
     """
-    Load endpoints.json and export the GraphQL schema.
+    Point d'entrée simple pour discovery.py.
 
     Args:
-        endpoints_json_path : path to endpoints.json
-        output_dir          : where to write the output files
-        fmt                 : "voyager" | "sdl" | "both"
+        base_url       : URL de base de l'API
+        timeout        : timeout HTTP
+        token          : token d'auth optionnel
+        known_endpoint : endpoint GraphQL déjà découvert (depuis _score_graphql)
 
     Returns:
-        ExportResult, or None if the file has no GraphQL schema
+        GraphQLSchemaResult sérialisable en JSON
     """
-    try:
-        with open(endpoints_json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logger.error(f"[export] Cannot read '{endpoints_json_path}': {e}")
-        return None
-
-    api_type = data.get("api_type", "")
-    if api_type != "GraphQL":
-        logger.error(
-            f"[export] '{endpoints_json_path}' is not a GraphQL discovery result "
-            f"(api_type: '{api_type}')"
-        )
-        return None
-
-    schema = data.get("schema")
-    if not schema:
-        logger.error(
-            f"[export] No schema found in '{endpoints_json_path}'. "
-            "Re-run discovery to fetch the schema."
-        )
-        return None
-
-    exporter = GraphQLSchemaExporter(schema)
-    return exporter.export(output_dir=output_dir, fmt=fmt)
+    fetcher = GraphQLSchemaFetcher(base_url, timeout=timeout, token=token)
+    return fetcher.fetch(endpoint=known_endpoint)
