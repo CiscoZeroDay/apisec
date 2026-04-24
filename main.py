@@ -39,12 +39,37 @@ from logger.logger        import logger, set_verbose
 
 VERSION = "1.0"
 
-ALL_TESTS = [
-    "misconfig", "auth",
-    "sqli", "blind_sqli", "nosql",
-    "xss", "idor", "ssrf",
+# REST tests — passed to RESTScanner
+ALL_REST_TESTS: list[str] = [
+    "misconfig", "auth", "sqli", "blind_sqli",
+    "nosql", "xss", "idor", "ssrf",
     "mass_assign", "rate_limit",
 ]
+
+# GraphQL tests — passed to GraphQLScanner
+ALL_GQL_TESTS: list[str] = [
+    "introspection", "bypass", "fields", "auth",
+    "idor", "csrf", "sqli", "nosqli",
+    "batch", "alias", "depth",
+    "subscription", "error",
+]
+
+# SOAP tests — passed to SOAPScanner
+ALL_SOAP_TESTS: list[str] = [
+    "wsdl", "xxe", "sqli", "injection",
+    "auth", "replay", "action_spoofing",
+]
+
+# Routing map — api_type -> test registry
+_TEST_REGISTRY: dict[str, list[str]] = {
+    "REST":    ALL_REST_TESTS,
+    "GraphQL": ALL_GQL_TESTS,
+    "SOAP":    ALL_SOAP_TESTS,
+    "Unknown": ALL_REST_TESTS,
+}
+
+# Backward compatibility alias
+ALL_TESTS = ALL_REST_TESTS
 
 SCANNER_LABELS: dict[str, str] = {
     "REST":    "REST Scanner    (SQLi, XSS, IDOR, Auth, NoSQL, SSRF...)",
@@ -236,19 +261,33 @@ def load_discovery_result(path: str) -> dict:
     return {}
 
 
-def parse_tests(tests_arg: str) -> list[str]:
-    """Parse --tests argument: 'all' or comma-separated list."""
+def parse_tests(tests_arg: str, api_type: str = "REST") -> list[str]:
+    """
+    Parse --tests argument for the given api_type.
+
+    Args:
+        tests_arg : "all" or comma-separated test names
+        api_type  : "REST" | "GraphQL" | "SOAP" | "Unknown"
+
+    Returns:
+        List of test names valid for the given api_type.
+    """
+    registry = _TEST_REGISTRY.get(api_type, ALL_REST_TESTS)
+
     if tests_arg.strip().lower() == "all":
-        return list(ALL_TESTS)
+        return list(registry)
 
     selected = [t.strip().lower() for t in tests_arg.split(",") if t.strip()]
-    unknown  = [t for t in selected if t not in ALL_TESTS]
+    valid    = [t for t in selected if t in registry]
+    unknown  = [t for t in selected if t not in registry]
 
     if unknown:
-        print(f"[!] Unknown tests ignored: {', '.join(unknown)}")
-        print(f"    Available: {', '.join(ALL_TESTS)}")
+        logger.debug(
+            f"[tests] Unknown or inapplicable tests for {api_type}: "
+            f"{', '.join(unknown)} — ignored"
+        )
 
-    return [t for t in selected if t in ALL_TESTS]
+    return valid
 
 
 def _resolve_token(args) -> Optional[str]:
@@ -409,7 +448,7 @@ def run_scan(
         print("[!] No endpoints to scan.")
         return []
 
-    tests = parse_tests(getattr(args, "tests", "all"))
+    tests = parse_tests(getattr(args, "tests", "all"), api_type=api_type)
     if not tests:
         print("[!] No valid tests selected.")
         return []
@@ -803,7 +842,8 @@ Examples:
   apisec full      --url https://api.example.com --wordlist wordlists/api.txt --tests all
   apisec capture   --url https://api.example.com --port 8080
 
-Available tests: {", ".join(ALL_TESTS)}
+REST tests  : {", ".join(ALL_REST_TESTS)}
+Available GQL tests : {", ".join(ALL_GQL_TESTS)}
         """,
     )
 
@@ -833,7 +873,7 @@ Available tests: {", ".join(ALL_TESTS)}
     p.add_argument("--url",      default=None, help="Base URL (used with --endpoint)")
     p.add_argument("--endpoint", default=None, help="Single path to test (e.g. /users/1)")
     p.add_argument("--tests",    default="all",
-                   help=f"Tests: all | {chr(44).join(ALL_TESTS)}")
+                   help="Tests to run: all | see --list-tests for available tests per API type")
     p.set_defaults(func=cmd_scan)
 
     # full
@@ -843,7 +883,7 @@ Available tests: {", ".join(ALL_TESTS)}
     p.add_argument("--wordlist",    required=True, help="Endpoint wordlist")
     p.add_argument("--mode",        choices=["quick", "full"], default="quick")
     p.add_argument("--tests",       default="all",
-                   help=f"Tests: all | {chr(44).join(ALL_TESTS)}")
+                   help="Tests to run: all | see --list-tests for available tests per API type")
     p.add_argument("--scan-output", default=None, dest="scan_output",
                    help="Output file for scan results (default: scan_results.json)")
     p.set_defaults(func=cmd_full)
