@@ -646,7 +646,7 @@ class GraphQLScanner:
 
 
 # -----------------------------------------------------------------------------
-#  Module-level accessor for --list-tests in main.py
+#  Module-level accessor for --list-tests inn main.py
 # -----------------------------------------------------------------------------
 
 def get_gql_tests() -> list[dict]:
