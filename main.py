@@ -727,9 +727,9 @@ def _print_available_tests(args) -> None:
 
             print(
                 f"  {num_color}[{num}]{RESET}  "
-                f"{impl_mark} {label:<30} "
-                f"[{sev_color}{sev}{RESET}]  "
-                f"{TODO_COLOR}{impact}{RESET}"
+                f"{impl_mark} {BOLD}{key:<16}{RESET} "
+                f"{label:<28} "
+                f"[{sev_color}{sev}{RESET}]"
                 f"{status}"
             )
             num += 1
@@ -737,8 +737,8 @@ def _print_available_tests(args) -> None:
         print()
         print(f"  Usage:")
         print(f"    apisec scan --input endpoints.json --tests all")
+        print(f"    apisec scan --input endpoints.json --tests 0")
         print(f"    apisec scan --input endpoints.json --tests 1,3,4")
-        print(f"    apisec scan --input endpoints.json --tests {entries[0][0] if entries else 'test'}")
         print()
 
     if api_type == "GraphQL":
