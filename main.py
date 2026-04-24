@@ -718,7 +718,7 @@ def _print_available_tests(args) -> None:
         for key, meta in entries:
             sev        = meta.get("severity", "MEDIUM")
             sev_color  = COLORS.get(sev, "")
-            impact     = meta.get("impact", "")[:40]
+            impact     = meta.get("impact", "")[:45]
             label      = meta.get("label", key)[:30]
             is_impl    = key in implemented
             impl_mark  = f"{IMPL_COLOR}✓{RESET}" if is_impl else f"{TODO_COLOR}~{RESET}"
@@ -727,9 +727,9 @@ def _print_available_tests(args) -> None:
 
             print(
                 f"  {num_color}[{num}]{RESET}  "
-                f"{impl_mark} {BOLD}{key:<16}{RESET} "
-                f"{label:<28} "
-                f"[{sev_color}{sev}{RESET}]"
+                f"{impl_mark} {label:<30} "
+                f"[{sev_color}{sev}{RESET}]  "
+                f"{TODO_COLOR}{impact}{RESET}"
                 f"{status}"
             )
             num += 1
