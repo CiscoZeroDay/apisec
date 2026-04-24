@@ -47,17 +47,57 @@ GRAPHQL_ENDPOINTS: list[str] = [
 ]
 
 # Requête d'introspection complète
+# Standard full introspection query — compatible with GraphQL Voyager,
+# Nathan Randal visualizer, and all GraphQL tooling.
+# Includes type information on fields and args so visual tools can
+# resolve relationships between types without errors.
 _INTROSPECTION_QUERY = """
 {
   __schema {
-    queryType    { name }
-    mutationType { name }
+    queryType        { name }
+    mutationType     { name }
+    subscriptionType { name }
     types {
-      name
       kind
+      name
+      description
       fields(includeDeprecated: true) {
         name
-        args { name }
+        description
+        isDeprecated
+        deprecationReason
+        args {
+          name
+          description
+          defaultValue
+          type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+        }
+        type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+      }
+      inputFields {
+        name
+        description
+        defaultValue
+        type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+      }
+      interfaces { kind name ofType { kind name ofType { kind name } } }
+      enumValues(includeDeprecated: true) {
+        name
+        description
+        isDeprecated
+        deprecationReason
+      }
+      possibleTypes { kind name ofType { kind name ofType { kind name } } }
+    }
+    directives {
+      name
+      description
+      locations
+      args {
+        name
+        description
+        defaultValue
+        type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
       }
     }
   }
