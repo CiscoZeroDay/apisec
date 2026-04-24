@@ -1,0 +1,229 @@
+{
+  "_meta": {
+    "version":     "1.0",
+    "standard":    "OWASP API Security Top 10 2023",
+    "description": "REST API vulnerability knowledge base for APISec scanner.",
+    "source":      "https://owasp.org/API-Security/"
+  },
+
+  "CORS-001": {
+    "id":          "CORS-001",
+    "label":       "Reflected Origin CORS Misconfiguration",
+    "severity":    "HIGH",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-942",
+    "impact":      "Any malicious website can read this API's responses on behalf of an authenticated victim.",
+    "description": "The server reflects the attacker-controlled Origin header without validation. Any malicious website can send cross-origin requests to this API and read the response on behalf of an authenticated victim.",
+    "solution":    "Maintain an explicit server-side allowlist of trusted origins. Validate the Origin header against this allowlist before reflecting it. Never reflect arbitrary origins.",
+    "reference":   "https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/11-Client-Side_Testing/07-Testing_Cross_Origin_Resource_Sharing"
+  },
+
+  "CORS-002": {
+    "id":          "CORS-002",
+    "label":       "Wildcard CORS with Credentials Enabled",
+    "severity":    "CRITICAL",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-942",
+    "impact":      "Complete authentication bypass — attacker receives victim's authenticated session cookies and tokens.",
+    "description": "The API sets both Access-Control-Allow-Origin: * and Access-Control-Allow-Credentials: true. This combination is explicitly forbidden by the CORS specification and allows any origin to make credentialed cross-origin requests.",
+    "solution":    "Never combine wildcard CORS with credentials. Use a strict origin allowlist if credentials are required.",
+    "reference":   "https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS/Errors/CORSNotSupportingCredentials"
+  },
+
+  "CORS-003": {
+    "id":          "CORS-003",
+    "label":       "Unrestricted Wildcard CORS Origin",
+    "severity":    "MEDIUM",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-942",
+    "impact":      "Any website can read this API's responses — data exfiltration risk.",
+    "description": "The API allows cross-origin requests from any domain via a wildcard Access-Control-Allow-Origin: *. Any website can read this API's responses.",
+    "solution":    "Restrict CORS to an explicit allowlist of trusted origins.",
+    "reference":   "https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/11-Client-Side_Testing/07-Testing_Cross_Origin_Resource_Sharing"
+  },
+
+  "HDR-001": {
+    "id":          "HDR-001",
+    "label":       "Missing Strict-Transport-Security (HSTS)",
+    "severity":    "MEDIUM",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-319",
+    "impact":      "Browsers may connect over plain HTTP, exposing credentials and tokens to network interception.",
+    "description": "The Strict-Transport-Security (HSTS) header is absent. Without HSTS, browsers may connect to the API over plain HTTP, exposing credentials and session tokens to network-level interception (man-in-the-middle attacks).",
+    "solution":    "Add: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+    "reference":   "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security"
+  },
+
+  "HDR-002": {
+    "id":          "HDR-002",
+    "label":       "Missing X-Content-Type-Options",
+    "severity":    "LOW",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-693",
+    "impact":      "Browsers may MIME-sniff responses, potentially executing malicious scripts.",
+    "description": "The X-Content-Type-Options header is absent. Without it, browsers may MIME-sniff responses away from the declared content type, potentially executing malicious scripts disguised as benign content.",
+    "solution":    "Add: X-Content-Type-Options: nosniff",
+    "reference":   "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options"
+  },
+
+  "HDR-003": {
+    "id":          "HDR-003",
+    "label":       "Missing X-Frame-Options",
+    "severity":    "MEDIUM",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-1021",
+    "impact":      "Clickjacking attacks — users tricked into performing unintended actions.",
+    "description": "The X-Frame-Options header is absent. This allows the API responses to be embedded in iframes on third-party pages, enabling clickjacking attacks where users are tricked into performing unintended actions.",
+    "solution":    "Add: X-Frame-Options: DENY (or SAMEORIGIN if framing is needed internally)",
+    "reference":   "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options"
+  },
+
+  "HDR-004": {
+    "id":          "HDR-004",
+    "label":       "Missing Content-Security-Policy (CSP)",
+    "severity":    "MEDIUM",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-693",
+    "impact":      "No defense against XSS — malicious scripts can be injected and executed.",
+    "description": "The Content-Security-Policy header is absent. CSP is a critical defense against Cross-Site Scripting (XSS) attacks by specifying which sources of content are allowed to be loaded and executed by the browser.",
+    "solution":    "Define a strict CSP policy. Minimum: Content-Security-Policy: default-src 'self'",
+    "reference":   "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy"
+  },
+
+  "INFO-001": {
+    "id":          "INFO-001",
+    "label":       "Server Version Disclosure",
+    "severity":    "LOW",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-200",
+    "impact":      "Attacker can identify known CVEs for the specific server version.",
+    "description": "The Server header exposes the web server software name and version. This information allows attackers to identify known CVEs targeting the specific version and craft targeted exploits.",
+    "solution":    "Configure the server to return a generic value (e.g. Server: webserver) or suppress the header entirely.",
+    "reference":   "https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/01-Information_Gathering/02-Fingerprint_Web_Server"
+  },
+
+  "INFO-002": {
+    "id":          "INFO-002",
+    "label":       "Technology Stack Disclosure via X-Powered-By",
+    "severity":    "LOW",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-200",
+    "impact":      "Attacker can identify framework-specific vulnerabilities.",
+    "description": "The X-Powered-By header reveals the backend technology and version (e.g. PHP/7.2.1, ASP.NET). This fingerprinting information aids attackers in identifying framework-specific vulnerabilities.",
+    "solution":    "Remove the X-Powered-By header. In Express.js: app.disable('x-powered-by'). In PHP: expose_php = Off.",
+    "reference":   "https://owasp.org/www-project-web-security-testing-guide/"
+  },
+
+  "VERB-001": {
+    "id":          "VERB-001",
+    "label":       "HTTP TRACE Method Enabled",
+    "severity":    "MEDIUM",
+    "confidence":  "MEDIUM",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-16",
+    "impact":      "XST attacks — HttpOnly cookies and Authorization headers exposed via reflected request.",
+    "description": "The HTTP TRACE method is enabled. It reflects the full request back, enabling Cross-Site Tracing (XST) attacks that can expose HttpOnly cookies and Authorization headers.",
+    "solution":    "Apache: TraceEnable Off. Nginx: if ($request_method = TRACE) { return 405; }.",
+    "reference":   "https://owasp.org/www-community/attacks/Cross_Site_Tracing"
+  },
+
+  "ERR-001": {
+    "id":          "ERR-001",
+    "label":       "Verbose Error / Stack Trace Exposure",
+    "severity":    "MEDIUM",
+    "confidence":  "HIGH",
+    "owasp":       "API8:2023 - Security Misconfiguration",
+    "cwe":         "CWE-209",
+    "impact":      "Internal details (stack traces, file paths, DB queries, framework versions) aid attacker reconnaissance.",
+    "description": "The API returns verbose error messages containing stack traces, internal file paths, database error strings, or framework version information. This information is valuable for attackers profiling the backend stack.",
+    "solution":    "Return generic error messages in production. Log detailed errors server-side only. Use error masking middleware.",
+    "reference":   "https://owasp.org/www-community/Improper_Error_Handling"
+  },
+
+  "AUTH-001": {
+    "id":          "AUTH-001",
+    "label":       "Endpoint Accessible Without Authentication Token",
+    "severity":    "HIGH",
+    "confidence":  "HIGH",
+    "owasp":       "API2:2023 - Broken Authentication",
+    "cwe":         "CWE-306",
+    "impact":      "Protected resources accessible to unauthenticated users.",
+    "description": "This endpoint returns data without any authentication token. Protected resources are accessible to unauthenticated users.",
+    "solution":    "Enforce authentication middleware on every protected route. Validate the token before any business logic executes.",
+    "reference":   "https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/"
+  },
+
+  "AUTH-002": {
+    "id":          "AUTH-002",
+    "label":       "Endpoint Accepts Invalid / Forged Token",
+    "severity":    "HIGH",
+    "confidence":  "HIGH",
+    "owasp":       "API2:2023 - Broken Authentication",
+    "cwe":         "CWE-287",
+    "impact":      "Token signature, structure, and content are not validated — trivial authentication bypass.",
+    "description": "The server returns 200 with a completely invalid token. Token signature, structure, and content are not validated.",
+    "solution":    "Validate token signature, expiry, issuer, and audience on every request. Return 401 for any token that fails validation.",
+    "reference":   "https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/"
+  },
+
+  "AUTH-003": {
+    "id":          "AUTH-003",
+    "label":       "JWT 'none' Algorithm Accepted",
+    "severity":    "CRITICAL",
+    "confidence":  "HIGH",
+    "owasp":       "API2:2023 - Broken Authentication",
+    "cwe":         "CWE-347",
+    "impact":      "Complete authentication bypass — any attacker can forge arbitrary tokens without a secret key.",
+    "description": "The server accepted a JWT with alg:none — no cryptographic signature. Any attacker can forge arbitrary tokens without knowing any secret key. This is a complete authentication bypass.",
+    "solution":    "Explicitly reject alg:none. Hardcode the expected algorithm server-side. Never trust the algorithm from the token header.",
+    "reference":   "https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/"
+  },
+
+  "AUTH-004": {
+    "id":          "AUTH-004",
+    "label":       "JWT Algorithm Confusion (RS256 -> HS256)",
+    "severity":    "CRITICAL",
+    "confidence":  "HIGH",
+    "owasp":       "API2:2023 - Broken Authentication",
+    "cwe":         "CWE-347",
+    "impact":      "Attacker can forge any token without knowing the private key.",
+    "description": "Server accepted a token where the algorithm was changed from RS256 to HS256, signed with the public RSA key as HMAC secret. Attacker can forge any token without knowing the private key.",
+    "solution":    "Hardcode the expected algorithm server-side. Use: jwt.decode(token, key, algorithms=['RS256']). Never read the algorithm from the token header.",
+    "reference":   "https://portswigger.net/web-security/jwt/algorithm-confusion"
+  },
+
+  "AUTH-005": {
+    "id":          "AUTH-005",
+    "label":       "No Rate Limiting on Login Endpoint",
+    "severity":    "HIGH",
+    "confidence":  "HIGH",
+    "owasp":       "API2:2023 - Broken Authentication",
+    "cwe":         "CWE-307",
+    "impact":      "Unlimited brute-force and credential-stuffing attacks possible.",
+    "description": "The login endpoint does not enforce any rate limiting. An attacker can send unlimited authentication attempts without being blocked or slowed down, enabling brute-force and credential-stuffing attacks.",
+    "solution":    "Return HTTP 429 after N failed attempts. Add Retry-After, X-RateLimit-* headers. Consider account lockout and CAPTCHA for suspicious IPs.",
+    "reference":   "https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/"
+  },
+
+  "SQLI-001": {
+    "id":          "SQLI-001",
+    "label":       "SQL Injection",
+    "severity":    "CRITICAL",
+    "confidence":  "HIGH",
+    "owasp":       "API3:2023 - Broken Object Property Level Authorization",
+    "cwe":         "CWE-89",
+    "impact":      "Full database compromise — data exfiltration, authentication bypass, RCE.",
+    "description": "SQL injection detected. User-supplied input is incorporated into SQL queries without parameterization, allowing an attacker to manipulate the query logic.",
+    "solution":    "Use parameterized queries or prepared statements exclusively. Never interpolate user input directly into SQL strings.",
+    "reference":   "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+  }
+}
