@@ -265,19 +265,52 @@ def parse_tests(tests_arg: str, api_type: str = "REST") -> list[str]:
     """
     Parse --tests argument for the given api_type.
 
+    Accepts:
+      - "all"                  → all tests for this api_type
+      - "introspection,fields" → test names
+      - "1,3,4"               → test numbers (from --list-tests)
+      - "0"                   → same as "all"
+
     Args:
-        tests_arg : "all" or comma-separated test names
+        tests_arg : "all", comma-separated names, or comma-separated numbers
         api_type  : "REST" | "GraphQL" | "SOAP" | "Unknown"
 
     Returns:
         List of test names valid for the given api_type.
     """
+    from core.vuln_db import VulnDB
+
     registry = _TEST_REGISTRY.get(api_type, ALL_REST_TESTS)
 
-    if tests_arg.strip().lower() == "all":
+    if tests_arg.strip().lower() in ("all", "0"):
         return list(registry)
 
-    selected = [t.strip().lower() for t in tests_arg.split(",") if t.strip()]
+    tokens = [t.strip() for t in tests_arg.split(",") if t.strip()]
+
+    # Check if user passed numbers
+    if all(t.isdigit() for t in tokens):
+        # Load the knowledge base to map num → name
+        db_name = {"REST": "rest", "GraphQL": "graphql", "SOAP": "soap"}.get(api_type, "rest")
+        db      = VulnDB(db_name)
+        entries = db.entries   # list of (key, meta) in order
+
+        resolved: list[str] = []
+        for t in tokens:
+            n = int(t)
+            if n == 0:
+                return list(registry)
+            if 1 <= n <= len(entries):
+                key = entries[n - 1][0]
+                if key in registry:
+                    resolved.append(key)
+                else:
+                    logger.debug(f"[tests] Test #{n} ({key}) not implemented for {api_type} — skipped")
+            else:
+                logger.debug(f"[tests] Test number {n} out of range (max {len(entries)}) — ignored")
+        return resolved
+
+    # Names
+    selected = [t.lower() for t in tokens]
     valid    = [t for t in selected if t in registry]
     unknown  = [t for t in selected if t not in registry]
 
@@ -630,11 +663,206 @@ def cmd_params(args) -> None:
     print(f"[->] Run scan: apisec scan --input endpoints.json --tests all\n")
 
 
+def _print_available_tests(args) -> None:
+    """
+    Display available vulnerability tests for the detected API type.
+    Reads api_type from endpoints.json if --input is provided,
+    otherwise shows all tests for all API types.
+
+    Style: Metasploit-inspired numbered list with severity and impact.
+    """
+    from core.vuln_db import VulnDB
+
+    RESET    = "\033[0m"
+    BOLD     = "\033[1m"
+    COLORS   = {
+        "CRITICAL": "\033[91m",
+        "HIGH":     "\033[93m",
+        "MEDIUM":   "\033[94m",
+        "LOW":      "\033[92m",
+    }
+    IMPL_COLOR = "\033[92m"   # green  — implemented
+    TODO_COLOR = "\033[90m"   # gray   — planned
+
+    # Resolve api_type
+    api_type = "ALL"
+    input_file = getattr(args, "input", None)
+    if input_file and os.path.isfile(input_file):
+        disc     = load_discovery_result(input_file)
+        api_type = disc.get("api_type", "ALL")
+
+    # Build display list
+    def show_tests(api: str, registry: list[str], db_name: str) -> None:
+        db      = VulnDB(db_name)
+        entries = db.entries
+
+        if api == "GraphQL":
+            from core.graphql_scanner import GraphQLScanner
+            implemented = set(GraphQLScanner._TEST_REGISTRY.keys())
+        elif api == "REST":
+            from core.rest_scanner import RESTScanner
+            implemented = set(RESTScanner._TEST_REGISTRY.keys())
+        else:
+            implemented = set(registry)
+
+        print(f"\n{BOLD}{api} Vulnerability Tests{RESET}")
+        if input_file:
+            disc_ep = load_discovery_result(input_file)
+            ep = disc_ep.get("endpoints", [""])[0]
+            print(f"  Target : {ep}")
+        print("  " + "─" * 68)
+        print(f"  {BOLD}[0]{RESET}  {'all':<20} {'Run all implemented tests':<35}")
+        print("  " + "─" * 68)
+
+        num = 1
+        for key, meta in entries:
+            sev        = meta.get("severity", "MEDIUM")
+            sev_color  = COLORS.get(sev, "")
+            impact     = meta.get("impact", "")[:40]
+            label      = meta.get("label", key)[:30]
+            is_impl    = key in implemented
+            impl_mark  = f"{IMPL_COLOR}✓{RESET}" if is_impl else f"{TODO_COLOR}~{RESET}"
+            num_color  = IMPL_COLOR if is_impl else TODO_COLOR
+            status     = "" if is_impl else f" {TODO_COLOR}[planned]{RESET}"
+
+            print(
+                f"  {num_color}[{num}]{RESET}  "
+                f"{impl_mark} {label:<30} "
+                f"[{sev_color}{sev}{RESET}]  "
+                f"{TODO_COLOR}{impact}{RESET}"
+                f"{status}"
+            )
+            num += 1
+
+        print()
+        print(f"  Usage:")
+        print(f"    apisec scan --input endpoints.json --tests all")
+        print(f"    apisec scan --input endpoints.json --tests 1,3,4")
+        print(f"    apisec scan --input endpoints.json --tests {entries[0][0] if entries else 'test'}")
+        print()
+
+    if api_type == "GraphQL":
+        show_tests("GraphQL", ALL_GQL_TESTS, "graphql")
+    elif api_type == "REST":
+        show_tests("REST", ALL_REST_TESTS, "rest")
+    elif api_type == "SOAP":
+        show_tests("SOAP", ALL_SOAP_TESTS, "soap")
+    else:
+        # Show all
+        show_tests("GraphQL", ALL_GQL_TESTS, "graphql")
+        show_tests("REST",    ALL_REST_TESTS, "rest")
+
+
+def print_exploit_results(results: list) -> None:
+    """Display exploitation results."""
+    if not results:
+        print("\n[i] No exploitation confirmed.\n")
+        return
+
+    print("\n" + "=" * 65)
+    print(f"  EXPLOIT RESULTS — {len(results)} confirmed finding(s)")
+    print("=" * 65)
+
+    for r in results:
+        print(f"\n  [{r.exploit_id}] {r.title}")
+        print(f"  Endpoint  : {r.endpoint}")
+        print(f"  Payload   : {r.payload[:100]}")
+        print(f"  Evidence  : {r.evidence[:150]}")
+        print(f"  Impact    : {r.impact[:150]}")
+        if r.poc_file:
+            print(f"  PoC file  : {r.poc_file}")
+        if r.data and isinstance(r.data, dict) and "values" in r.data:
+            vals = r.data["values"][:5]
+            print(f"  Data      : {vals}{'...' if len(r.data['values']) > 5 else ''}")
+        print("  " + "-" * 62)
+
+    print("=" * 65 + "\n")
+
+
+def cmd_exploit(args) -> None:
+    """
+    apisec exploit --input endpoints.json --scan-input scan_results.json
+    apisec exploit --input endpoints.json --exploits E2,E3
+    """
+    from gql.exploit_engine import GraphQLExploitEngine
+
+    if not validate_input_file(args.input):
+        sys.exit(1)
+
+    disc     = load_discovery_result(args.input)
+    api_type = disc.get("api_type", "REST")
+
+    if api_type != "GraphQL":
+        print(f"[!] exploit command currently supports GraphQL only (detected: {api_type})")
+        sys.exit(1)
+
+    schema   = disc.get("schema")
+    base_url = disc.get("target_url") or _resolve_base_url(args, disc.get("endpoints", []))
+    token    = _resolve_token(args)
+
+    # Load scan results if provided
+    scan_results = []
+    if getattr(args, "scan_input", None) and os.path.isfile(args.scan_input):
+        try:
+            from core.models import ScanResult
+            raw = json.load(open(args.scan_input, encoding="utf-8"))
+            # Reconstruct ScanResult objects
+            scan_results = [ScanResult(**r) for r in raw]
+            logger.info(f"[exploit] Loaded {len(scan_results)} scan result(s) from {args.scan_input}")
+        except Exception as e:
+            logger.warning(f"[exploit] Could not load scan results: {e}")
+
+    # If no scan results, run a quick scan first
+    if not scan_results:
+        logger.info("[exploit] No scan results provided — running scan first...")
+        endpoints = disc.get("endpoints", [])
+        if not endpoints:
+            print("[!] No endpoints found in input file.")
+            sys.exit(1)
+
+        from core.graphql_scanner import GraphQLScanner
+        scanner      = GraphQLScanner(base_url, timeout=args.timeout, token=token, schema=schema)
+        scan_results = scanner.scan(endpoints, tests=None)
+
+        if not scan_results:
+            print("[!] Scan found no vulnerabilities — nothing to exploit.")
+            sys.exit(0)
+
+    # Parse exploits to run
+    exploits_arg = getattr(args, "exploits", None)
+    exploits     = [e.strip().upper() for e in exploits_arg.split(",")] if exploits_arg else None
+
+    output_dir = getattr(args, "output_dir", ".") or "."
+
+    engine  = GraphQLExploitEngine(
+        base_url   = base_url,
+        schema     = schema,
+        token      = token,
+        timeout    = args.timeout,
+        output_dir = output_dir,
+    )
+    results = engine.exploit(scan_results, exploits=exploits)
+
+    if args.json:
+        print(json.dumps([r.to_dict() for r in results], indent=2, ensure_ascii=False))
+    else:
+        print_exploit_results(results)
+
+    if args.output:
+        save_json([r.to_dict() for r in results], args.output)
+
+
 def cmd_scan(args) -> None:
     """
     apisec scan --input endpoints.json [--tests sqli,xss]
     apisec scan --url URL --endpoint /users/1 [--tests all]
+    apisec scan --input endpoints.json --list-tests
     """
+    # --list-tests : display available tests for the detected API type
+    if getattr(args, "list_tests", False):
+        _print_available_tests(args)
+        return
+
     endpoints: list[str] = []
     api_type:  str       = "REST"
 
@@ -872,8 +1100,10 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
     p.add_argument("--input",    default=None, help="endpoints.json from discovery")
     p.add_argument("--url",      default=None, help="Base URL (used with --endpoint)")
     p.add_argument("--endpoint", default=None, help="Single path to test (e.g. /users/1)")
-    p.add_argument("--tests",    default="all",
-                   help="Tests to run: all | see --list-tests for available tests per API type")
+    p.add_argument("--tests",      default="all",
+                   help="Tests to run: all | comma-separated names | numbers (e.g. 1,3,4)")
+    p.add_argument("--list-tests", action="store_true", default=False, dest="list_tests",
+                   help="List available vulnerability tests for the detected API type")
     p.set_defaults(func=cmd_scan)
 
     # full
@@ -889,6 +1119,19 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
     p.set_defaults(func=cmd_full)
 
     # capture
+    # exploit
+    p = subs.add_parser("exploit", parents=[common],
+                        help="Exploit confirmed GraphQL vulnerabilities (E1-E5)")
+    p.add_argument("--input",       required=True,
+                   help="endpoints.json from discovery")
+    p.add_argument("--scan-input",  default=None, dest="scan_input",
+                   help="scan_results.json from previous scan (optional)")
+    p.add_argument("--exploits",    default=None,
+                   help="Exploits to run: E1,E2,E3 | all (default: all applicable)")
+    p.add_argument("--output-dir",  default=".", dest="output_dir",
+                   help="Directory for generated PoC files (default: current dir)")
+    p.set_defaults(func=cmd_exploit)
+
     # schema
     p = subs.add_parser("schema", parents=[common],
                         help="Export GraphQL schema for visual tools (Voyager, Nathan Randal)")
