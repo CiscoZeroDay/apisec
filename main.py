@@ -2,124 +2,152 @@
 """
 APISec — API Security Audit Tool
 
-Modes:
-  discovery  →  Detects API type and crawls endpoints
-  params     →  Discovers real parameters for each endpoint (like Arjun)
-  scan       →  Tests discovered endpoints for vulnerabilities
-  full       →  Discovery + Scan chained automatically
+Commands:
+  discovery  ->  Detect API type, crawl endpoints, fetch GraphQL schema
+  params     ->  Discover REST parameters per endpoint (Arjun-style)
+  scan       ->  Test endpoints for vulnerabilities
+  full       ->  Discovery + Scan chained automatically
+  capture    ->  Capture live traffic via mitmproxy
 
 Examples:
   apisec discovery --url https://api.example.com --wordlist wordlists/api.txt
-  apisec params --input endpoints.json
-  apisec scan --input endpoints.json --tests sqli,xss,idor
-  apisec scan --url https://api.example.com --endpoint /users/1 --tests all
-  apisec full --url https://api.example.com --wordlist wordlists/api.txt
+  apisec params    --input endpoints.json
+  apisec scan      --input endpoints.json --tests all
+  apisec scan      --url https://api.example.com --endpoint /users/1 --tests sqli,idor
+  apisec full      --url https://api.example.com --wordlist wordlists/api.txt --tests all
 """
+
+from __future__ import annotations
 
 import argparse
 import json
-import sys
 import os
+import sys
+from typing import Optional
+from urllib.parse import urlparse
 
-from core.discovery    import APIDiscovery
-from config.settings   import ScanConfig, ScanMode
-from core.rest_scanner import RESTScanner
-from logger.logger     import logger, set_verbose
+from config.settings      import ScanConfig, ScanMode
+from core.discovery       import APIDiscovery
+from core.rest_scanner    import RESTScanner
 from core.traffic_capture import TrafficCapture
+from logger.logger        import logger, set_verbose
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Banner & display
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+#  Constants
+# -----------------------------------------------------------------------------
 
-def print_banner():
-    print("""
-╔═══════════════════════════════════════════════════════╗
-║           APISec — API Security Audit Tool  v1.0      ║
-║        REST | GraphQL | SOAP  —  Discovery            ║
-╚═══════════════════════════════════════════════════════╝
+VERSION = "1.0"
+
+ALL_TESTS = [
+    "misconfig", "auth",
+    "sqli", "blind_sqli", "nosql",
+    "xss", "idor", "ssrf",
+    "mass_assign", "rate_limit",
+]
+
+SCANNER_LABELS: dict[str, str] = {
+    "REST":    "REST Scanner    (SQLi, XSS, IDOR, Auth, NoSQL, SSRF...)",
+    "GraphQL": "GraphQL Scanner (Introspection, Depth, FieldExposure, Auth...)",
+    "SOAP":    "SOAP Scanner    (XXE, WSDL, SQLi, SOAPAction...)",
+}
+
+SEVERITY_COLORS: dict[str, str] = {
+    "CRITICAL": "\033[91m",
+    "HIGH":     "\033[93m",
+    "MEDIUM":   "\033[94m",
+    "LOW":      "\033[92m",
+    "INFO":     "\033[97m",
+}
+API_COLORS: dict[str, str] = {
+    "REST":    "\033[92m",
+    "GraphQL": "\033[94m",
+    "SOAP":    "\033[93m",
+    "Unknown": "\033[91m",
+}
+RESET = "\033[0m"
+
+
+# -----------------------------------------------------------------------------
+#  Display helpers
+# -----------------------------------------------------------------------------
+
+def print_banner() -> None:
+    print(f"""
+\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
+\u2551       APISec - API Security Audit Tool  v{VERSION}        \u2551
+\u2551        REST | GraphQL | SOAP  -  Audit              \u2551
+\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d
 """)
 
 
-def print_discovery_result(result: dict):
+def print_discovery_result(result: dict) -> None:
     confidence_pct = int(result["confidence"] * 100)
+    color          = API_COLORS.get(result["api_type"], "")
 
-    api_colors = {
-        "REST":    "\033[92m",   # green
-        "GraphQL": "\033[94m",   # blue
-        "SOAP":    "\033[93m",   # yellow
-        "Unknown": "\033[91m",   # red
-    }
-    RESET = "\033[0m"
-    color = api_colors.get(result["api_type"], "")
-
-    print("\n" + "═" * 57)
+    print("\n" + "=" * 57)
     print("  DISCOVERY RESULT")
-    print("═" * 57)
+    print("=" * 57)
     print(f"  API Type    : {color}{result['api_type']}{RESET}  ({confidence_pct}% confidence)")
     print(f"  Score       : {result.get('score', 'N/A')}")
     print(f"  Tech Stack  : {', '.join(result['tech_stack']) or 'Unknown'}")
-    print(f"  Reasons     :")
+    print("  Reasons     :")
     for r in result["reasons"]:
-        print(f"    • {r}")
+        print(f"    - {r}")
 
-    total = len(result["endpoints"])
-    print(f"\n  Endpoints found : {total}")
+    print(f"\n  Endpoints found : {len(result['endpoints'])}")
 
     if result.get("swagger_endpoints"):
-        print(f"\n  [Swagger/OpenAPI]  {len(result['swagger_endpoints'])} endpoints")
+        print(f"\n  [Swagger/OpenAPI]  {len(result['swagger_endpoints'])} endpoint(s)")
         for ep in result["swagger_endpoints"]:
-            print(f"    • {ep}")
+            print(f"    - {ep}")
 
     if result.get("crawled_endpoints"):
-        print(f"\n  [Crawl]  {len(result['crawled_endpoints'])} endpoints")
+        print(f"\n  [Crawl]  {len(result['crawled_endpoints'])} endpoint(s)")
         for ep in result["crawled_endpoints"]:
-            print(f"    • {ep}")
+            print(f"    - {ep}")
 
-    print("═" * 57 + "\n")
+    schema = result.get("schema")
+    if schema and schema.get("method") != "none":
+        print(f"\n  [GraphQL Schema]  method : {schema['method']}")
+        print(f"    queries   : {len(schema.get('queries', []))}")
+        print(f"    mutations : {len(schema.get('mutations', []))}")
+        print(f"    types     : {len(schema.get('types', []))}")
+
+    print("=" * 57 + "\n")
 
 
-def print_params_result(results: dict):
-    """Display discovered parameters per endpoint."""
-    print("\n" + "═" * 57)
+def print_params_result(results: dict) -> None:
+    print("\n" + "=" * 57)
     print("  PARAMETER DISCOVERY RESULT")
-    print("═" * 57)
+    print("=" * 57)
 
     if not results:
         print("\n  [!] No parameters found on any endpoint.\n")
-        print("═" * 57 + "\n")
+        print("=" * 57 + "\n")
         return
 
-    total_params = sum(len(p) for p in results.values())
+    total = sum(len(p) for p in results.values())
     print(f"\n  Endpoints with params : {len(results)}")
-    print(f"  Total params found    : {total_params}\n")
+    print(f"  Total params found    : {total}\n")
 
     for endpoint, params in results.items():
         print(f"  {endpoint}")
         for param, reason in params:
-            print(f"    [v] {param:<20} based on: {reason}")
+            print(f"    [v] {param:<25} -> {reason}")
         print()
 
-    print("═" * 57 + "\n")
+    print("=" * 57 + "\n")
 
 
-def print_scan_results(results: list):
-    SEVERITY_COLORS = {
-        "CRITICAL": "\033[91m",   # red
-        "HIGH":     "\033[93m",   # yellow
-        "MEDIUM":   "\033[94m",   # blue
-        "LOW":      "\033[92m",   # green
-        "INFO":     "\033[97m",   # white
-    }
-    RESET = "\033[0m"
-
+def print_scan_results(results: list) -> None:
     if not results:
-        print("\n[✓] No vulnerabilities detected.\n")
+        print("\n[OK] No vulnerabilities detected.\n")
         return
 
-    print("\n" + "═" * 65)
-    print(f"  SCAN RESULTS — {len(results)} unique finding(s) detected")
-    print("═" * 65)
+    print("\n" + "=" * 65)
+    print(f"  SCAN RESULTS - {len(results)} finding(s) detected")
+    print("=" * 65)
 
     for vuln in results:
         color = SEVERITY_COLORS.get(vuln.severity, "")
@@ -134,25 +162,24 @@ def print_scan_results(results: list):
         print(f"  OWASP      : {vuln.owasp}  |  CWE: {vuln.cwe}  |  Confidence: {vuln.confidence}")
         print(f"  Description: {vuln.description}")
         print(f"  Solution   : {vuln.solution}")
-        print("  " + "─" * 62)
+        print("  " + "-" * 62)
 
     print("\n  SUMMARY:")
     for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
         count = sum(1 for v in results if v.severity == sev)
         if count:
-            color = SEVERITY_COLORS[sev]
-            print(f"    {color}{sev}{RESET} : {count}")
+            print(f"    {SEVERITY_COLORS[sev]}{sev}{RESET} : {count}")
 
-    print("═" * 65 + "\n")
+    print("=" * 65 + "\n")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  Validation
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def validate_url(url: str) -> bool:
     if not url.startswith(("http://", "https://")):
-        print(f"[!] Invalid URL: '{url}' — must start with http:// or https://")
+        print(f"[!] Invalid URL: '{url}' - must start with http:// or https://")
         return False
     return True
 
@@ -166,69 +193,170 @@ def validate_wordlist(path: str) -> bool:
 
 def validate_input_file(path: str) -> bool:
     if not os.path.isfile(path):
-        print(f"[!] Endpoints file not found: '{path}'")
+        print(f"[!] Input file not found: '{path}'")
         return False
     return True
 
 
 def validate_timeout(timeout: int) -> bool:
-    if timeout < 1 or timeout > 60:
-        print(f"[!] Invalid timeout: {timeout} — must be between 1 and 60")
+    if not 1 <= timeout <= 60:
+        print(f"[!] Invalid timeout: {timeout} - must be between 1 and 60")
         return False
     return True
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Save / Load
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+#  I/O helpers
+# -----------------------------------------------------------------------------
 
-def save_json(data, path: str):
+def save_json(data: object, path: str) -> None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         logger.info(f"[+] Saved to: {path}")
     except OSError as e:
-        logger.error(f"[!] Cannot save: {e}")
+        logger.error(f"[!] Cannot save to '{path}': {e}")
 
 
 def load_discovery_result(path: str) -> dict:
-    """Load the JSON file generated by discovery."""
+    """Load a JSON file produced by `apisec discovery`."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, list):
-            return {"endpoints": data, "api_type": "REST", "target_url": None}
-        if isinstance(data, dict):
-            return data
-        print(f"[!] Unrecognized JSON format in '{path}'")
-        return {}
     except (json.JSONDecodeError, OSError) as e:
-        print(f"[!] Error reading '{path}': {e}")
+        print(f"[!] Cannot read '{path}': {e}")
         return {}
+
+    if isinstance(data, list):
+        return {"endpoints": data, "api_type": "REST", "target_url": None}
+    if isinstance(data, dict):
+        return data
+
+    print(f"[!] Unrecognized JSON format in '{path}'")
+    return {}
 
 
 def parse_tests(tests_arg: str) -> list[str]:
-    """Parse --tests sqli,xss,idor → ['sqli', 'xss', 'idor']"""
-    ALL_TESTS = [
-        "sqli", "blind_sqli", "nosql", "xss", "idor",
-        "auth", "ssrf", "misconfig", "mass_assign", "rate_limit",
-    ]
-    if tests_arg == "all":
-        return ALL_TESTS
-    selected = [t.strip().lower() for t in tests_arg.split(",")]
+    """Parse --tests argument: 'all' or comma-separated list."""
+    if tests_arg.strip().lower() == "all":
+        return list(ALL_TESTS)
+
+    selected = [t.strip().lower() for t in tests_arg.split(",") if t.strip()]
     unknown  = [t for t in selected if t not in ALL_TESTS]
+
     if unknown:
         print(f"[!] Unknown tests ignored: {', '.join(unknown)}")
-        print(f"    Available tests: {', '.join(ALL_TESTS)}")
+        print(f"    Available: {', '.join(ALL_TESTS)}")
+
     return [t for t in selected if t in ALL_TESTS]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Core modes
-# ─────────────────────────────────────────────────────────────────────────────
+def _resolve_token(args) -> Optional[str]:
+    """Resolve auth token from --token or --token-file. --token takes priority."""
+    token = getattr(args, "token", None)
+    if token:
+        return token
 
-def run_discovery(args) -> dict | None:
-    """Run the discovery phase and return the result."""
+    token_file = getattr(args, "token_file", None)
+    if token_file:
+        try:
+            with open(token_file, "r", encoding="utf-8") as f:
+                token = f.read().strip()
+            logger.info(f"[cli] Token loaded from '{token_file}'")
+            return token
+        except FileNotFoundError:
+            logger.error(f"[!] Token file not found: '{token_file}'")
+            sys.exit(1)
+
+    return None
+
+
+def _resolve_base_url(args, endpoints: list[str]) -> Optional[str]:
+    """Derive the base URL from args or the first endpoint."""
+    base_url = getattr(args, "url", None)
+    if base_url:
+        return base_url.rstrip("/")
+    if endpoints:
+        parsed = urlparse(endpoints[0])
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+# -----------------------------------------------------------------------------
+#  Params resolution - REST only
+# -----------------------------------------------------------------------------
+
+def _resolve_params_map(
+    endpoints: list[str],
+    args,
+    token:    Optional[str],
+    api_type: str,
+) -> dict[str, list[str]]:
+    """
+    Return a {endpoint -> [param, ...]} map for REST scanners.
+
+    Routing:
+      GraphQL -> empty dict  (args come from introspection schema)
+      SOAP    -> empty dict  (args come from WSDL)
+      REST    -> load params.json if present, else run ParamDiscoverer
+
+    This is the single authoritative place where params are resolved.
+    run_scan() never calls ParamDiscoverer directly.
+    """
+    if api_type != "REST":
+        logger.debug(f"[params] Skipped for {api_type} - args derived from schema/WSDL")
+        return {}
+
+    params_file = "params.json"
+    params_map: dict[str, list[str]] = {}
+
+    # Fast path: reuse existing params.json
+    if os.path.isfile(params_file):
+        try:
+            with open(params_file, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            params_map = {
+                ep: [entry["param"] for entry in param_list]
+                for ep, param_list in raw.items()
+            }
+            total = sum(len(v) for v in params_map.values())
+            logger.info(
+                f"[params] Loaded {params_file} - "
+                f"{len(params_map)} endpoint(s), {total} param(s)"
+            )
+            return params_map
+        except Exception as e:
+            logger.warning(f"[params] Could not load {params_file}: {e}")
+
+    # Slow path: run ParamDiscoverer and persist results
+    logger.info("[params] params.json not found - running param discovery...")
+    try:
+        from core.param_discoverer import ParamDiscoverer
+
+        base_url   = _resolve_base_url(args, endpoints)
+        discoverer = ParamDiscoverer(base_url, timeout=args.timeout, token=token)
+        raw        = discoverer.discover_all(endpoints)
+
+        json_results = {
+            ep: [{"param": p, "reason": r} for p, r in params]
+            for ep, params in raw.items()
+        }
+        save_json(json_results, params_file)
+        logger.info(f"[params] Discovered and saved to {params_file}")
+
+        return {ep: [p for p, _ in params] for ep, params in raw.items()}
+
+    except Exception as e:
+        logger.warning(f"[params] Discovery failed: {e} - proceeding without params")
+        return {}
+
+
+# -----------------------------------------------------------------------------
+#  Core pipeline
+# -----------------------------------------------------------------------------
+
+def run_discovery(args) -> Optional[dict]:
+    """Phase 1 - Detect API type, crawl endpoints, fetch GraphQL schema."""
     if not validate_url(args.url):
         return None
     if not validate_wordlist(args.wordlist):
@@ -237,9 +365,9 @@ def run_discovery(args) -> dict | None:
         return None
 
     config = ScanConfig(
-        target_url=args.url,
-        mode=ScanMode.QUICK if args.mode == "quick" else ScanMode.FULL,
-        timeout=args.timeout,
+        target_url = args.url,
+        mode       = ScanMode.QUICK if args.mode == "quick" else ScanMode.FULL,
+        timeout    = args.timeout,
     )
 
     logger.info(f"[*] Target   : {config.target_url}")
@@ -249,8 +377,7 @@ def run_discovery(args) -> dict | None:
 
     try:
         discovery = APIDiscovery(config.target_url, timeout=config.timeout)
-        result    = discovery.run(args.wordlist, mode=args.mode)
-        return result
+        return discovery.run(args.wordlist, mode=args.mode)
     except KeyboardInterrupt:
         print("\n[!] Discovery interrupted.")
         sys.exit(0)
@@ -259,12 +386,22 @@ def run_discovery(args) -> dict | None:
         return None
 
 
-def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
+def run_scan(
+    endpoints: list[str],
+    args,
+    api_type:  str = "REST",
+) -> list:
     """
-    Run the scan phase on a list of endpoints.
-    Automatically routes to the correct scanner based on api_type.
+    Phase 3 - Route to the correct scanner based on api_type.
+
+    Routing:
+      GraphQL -> GraphQLScanner  (schema pre-loaded, no param discovery)
+      SOAP    -> SOAPScanner     (WSDL-based, no param discovery)
+      REST    -> RESTScanner     (params resolved via _resolve_params_map)
+
+    _resolve_params_map() is the single place that decides whether and how
+    to discover parameters. run_scan() never calls ParamDiscoverer directly.
     """
-    from urllib.parse import urlparse
     from core.graphql_scanner import GraphQLScanner
     from core.soap_scanner    import SOAPScanner
 
@@ -277,106 +414,50 @@ def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
         print("[!] No valid tests selected.")
         return []
 
-    token = getattr(args, "token", None)
-
-     # ── Résolution token-file ──────────────────────────────────────────────
-    if not token and getattr(args, "token_file", None):
-        try:
-            with open(args.token_file, "r") as f:
-                token = f.read().strip()
-            logger.info(f"[cli] Token loaded from {args.token_file}")
-        except FileNotFoundError:
-            logger.error(f"[cli] Token file not found: {args.token_file}")
-            sys.exit(1)
-            
     if not validate_timeout(args.timeout):
         return []
 
-    # ── Params map ────────────────────────────────────────────────────────
-    params_map: dict[str, list[str]] = {}
-    params_file = "params.json"
-
-    if os.path.isfile(params_file):
-        try:
-            with open(params_file, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            params_map = {
-                ep: [p["param"] for p in params]
-                for ep, params in raw.items()
-            }
-            logger.info(f"[cli] Params loaded from {params_file} — {len(params_map)} endpoint(s)")
-        except Exception as e:
-            logger.warning(f"[cli] Could not load params.json: {e}")
-    else:
-        logger.info("[cli] params.json not found — running param discovery automatically...")
-        try:
-            from core.param_discoverer import ParamDiscoverer
-            from urllib.parse import urlparse as _urlparse
-
-            _parsed   = _urlparse(endpoints[0])
-            _base_url = f"{_parsed.scheme}://{_parsed.netloc}"
-
-            discoverer = ParamDiscoverer(
-                _base_url,
-                timeout = args.timeout,
-                token   = token,
-            )
-            raw = discoverer.discover_all(endpoints)
-
-            json_results = {
-                ep: [{"param": p, "reason": r} for p, r in params]
-                for ep, params in raw.items()
-            }
-            save_json(json_results, params_file)
-            logger.info(f"[cli] Params discovered and saved to {params_file}")
-
-            params_map = {
-                ep: [p for p, _ in params]
-                for ep, params in raw.items()
-            }
-        except Exception as e:
-            logger.warning(f"[cli] Param discovery failed: {e}")
-    
-    # Determine base URL
-    base_url = getattr(args, "url", None)
-    if not base_url and endpoints:
-        parsed   = urlparse(endpoints[0])
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
+    token    = _resolve_token(args)
+    base_url = _resolve_base_url(args, endpoints)
 
     if not base_url:
         print("[!] Cannot determine base URL.")
         return []
 
-    SCANNER_LABELS = {
-        "REST":    "REST Scanner    (SQLi, XSS, IDOR, Auth, NoSQL...)",
-        "GraphQL": "GraphQL Scanner (Introspection, Depth, FieldExposure...)",
-        "SOAP":    "SOAP Scanner    (XXE, WSDL, SQLi, SOAPAction...)",
-    }
+    # Params resolution - REST only, GraphQL/SOAP return {}
+    params_map = _resolve_params_map(endpoints, args, token, api_type)
+
     logger.info(f"[*] {SCANNER_LABELS.get(api_type, f'Unknown scanner ({api_type})')}")
-    logger.info(f"[*] {len(endpoints)} endpoint(s) — tests: {', '.join(tests)}")
+    logger.info(f"[*] {len(endpoints)} endpoint(s) - tests: {', '.join(tests)}")
 
     try:
         if api_type == "GraphQL":
-            # Charger le schéma depuis endpoints.json si disponible
-            gql_schema = None
-            if hasattr(args, "input") and args.input:
+            # Load pre-fetched schema to avoid redundant introspection during scan
+            gql_schema: Optional[dict] = None
+            input_file = getattr(args, "input", None)
+            if input_file:
                 try:
-                    disc_data  = load_discovery_result(args.input)
-                    gql_schema = disc_data.get("schema") if disc_data else None
+                    disc_data  = load_discovery_result(input_file)
+                    gql_schema = disc_data.get("schema")
                 except Exception:
                     pass
+
             scanner = GraphQLScanner(
                 base_url,
                 timeout = args.timeout,
                 token   = token,
                 schema  = gql_schema,
             )
+
         elif api_type == "SOAP":
             scanner = SOAPScanner(base_url, timeout=args.timeout, token=token)
+
         else:
-            if api_type != "REST":
-                print(f"[!] Unsupported API type: '{api_type}' — falling back to REST Scanner")
-            scanner = RESTScanner(          # ← remplace seulement celui-ci
+            if api_type not in ("REST", "Unknown"):
+                logger.warning(
+                    f"[!] Unsupported API type '{api_type}' - falling back to REST Scanner"
+                )
+            scanner = RESTScanner(
                 base_url,
                 timeout    = args.timeout,
                 token      = token,
@@ -398,12 +479,12 @@ def run_scan(endpoints: list[str], args, api_type: str = "REST") -> list:
         return []
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  Subcommands
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
-def cmd_discovery(args):
-    """apisec discovery --url URL --wordlist FILE"""
+def cmd_discovery(args) -> None:
+    """apisec discovery --url URL --wordlist FILE [--mode quick|full]"""
     result = run_discovery(args)
     if result is None:
         sys.exit(1)
@@ -415,63 +496,73 @@ def cmd_discovery(args):
 
     output_path = args.output or "endpoints.json"
     save_json(result, output_path)
-    print(f"[→] Endpoints saved to '{output_path}'")
-    print(f"[→] Discover params : apisec params --input {output_path}")
-    print(f"[→] Run scan        : apisec scan --input {output_path}\n")
+    print(f"[->] Endpoints saved to '{output_path}'")
+
+    if result.get("api_type") == "GraphQL":
+        print(f"[->] GraphQL schema cached - run: apisec scan --input {output_path}")
+    else:
+        print(f"[->] Discover params : apisec params --input {output_path}")
+        print(f"[->] Run scan        : apisec scan   --input {output_path}")
+    print()
 
 
-def cmd_params(args):
+def cmd_params(args) -> None:
     """
-    apisec params --input endpoints.json
-    apisec params --input endpoints.json --wordlist wordlists/params-large.txt
-    apisec params --input endpoints.json --output params.json
+    apisec params --input endpoints.json [--wordlist FILE]
+
+    GraphQL -> exits immediately (args in schema)
+    SOAP    -> exits immediately (args from WSDL)
+    REST    -> runs full ParamDiscoverer pipeline
     """
     from core.param_discoverer import ParamDiscoverer
-    from urllib.parse import urlparse
 
     if not validate_input_file(args.input):
         sys.exit(1)
 
     disc = load_discovery_result(args.input)
     if not disc:
-        print("[!] Empty or malformed file.")
+        print("[!] Empty or malformed input file.")
         sys.exit(1)
 
-    # GraphQL — les paramètres viennent du schéma, pas du param discoverer
-    if disc.get("api_type") == "GraphQL":
-        schema = disc.get("schema")
-        if schema:
-            q_count = len(schema.get("queries", []))
-            m_count = len(schema.get("mutations", []))
-            print(f"[i] API GraphQL détectée — param discovery non nécessaire.")
-            print(f"    Le schéma contient {q_count} queries et {m_count} mutations.")
-            print(f"    Les arguments sont déjà dans endpoints.json → schema.queries[].args")
-            print(f"[→] Lance directement : apisec scan --input {args.input}")
+    api_type = disc.get("api_type", "REST")
+
+    # GraphQL: arguments already available in schema
+    if api_type == "GraphQL":
+        schema  = disc.get("schema") or {}
+        q_count = len(schema.get("queries",   []))
+        m_count = len(schema.get("mutations", []))
+        print("[i] GraphQL API detected - param discovery not required.")
+        if q_count or m_count:
+            print(f"    Schema contains {q_count} query/queries and {m_count} mutation(s).")
+            print(f"    Arguments available in '{args.input}' -> schema.queries[].args")
         else:
-            print("[i] API GraphQL détectée — aucun schéma dans le fichier.")
-            print("    Relance discovery pour récupérer le schéma : apisec discovery --url URL")
+            print("    No schema found - re-run discovery to fetch the schema.")
+        print(f"[->] Run scan: apisec scan --input {args.input}")
         sys.exit(0)
 
+    # SOAP: arguments come from WSDL, not HTTP probing
+    if api_type == "SOAP":
+        print("[i] SOAP API detected - param discovery not required.")
+        print("    Operation parameters are extracted from WSDL during scan.")
+        print(f"[->] Run scan: apisec scan --input {args.input}")
+        sys.exit(0)
+
+    # REST: run full ParamDiscoverer
     endpoints = disc.get("endpoints", [])
     if not endpoints:
-        print("[!] No endpoints in file.")
+        print("[!] No endpoints found in input file.")
         sys.exit(1)
 
-    # Determine base URL
-    base_url = disc.get("target_url") or getattr(args, "url", None)
-    if not base_url and endpoints:
-        parsed   = urlparse(endpoints[0])
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
-
+    base_url = disc.get("target_url") or _resolve_base_url(args, endpoints)
     if not base_url:
         print("[!] Cannot determine base URL.")
         sys.exit(1)
 
-    token    = getattr(args, "token", None)
+    token    = _resolve_token(args)
     wordlist = getattr(args, "wordlist", None)
 
-    print(f"[→] Discovering parameters on {len(endpoints)} endpoint(s)...")
-    print(f"[→] Base URL : {base_url}\n")
+    print(f"[->] Discovering parameters on {len(endpoints)} endpoint(s)...")
+    print(f"[->] Base URL : {base_url}\n")
 
     discoverer = ParamDiscoverer(
         base_url,
@@ -479,48 +570,43 @@ def cmd_params(args):
         token    = token,
         wordlist = wordlist,
     )
-
-    # discover_all returns {endpoint_url: [(param, reason), ...]}
     results = discoverer.discover_all(endpoints)
 
-    # Display results
     if args.json:
-        # Convert tuples to dicts for JSON serialization
-        json_results = {
+        json_out = {
             ep: [{"param": p, "reason": r} for p, r in params]
             for ep, params in results.items()
         }
-        print(json.dumps(json_results, indent=2, ensure_ascii=False))
+        print(json.dumps(json_out, indent=2, ensure_ascii=False))
     else:
         print_params_result(results)
 
-    # Save results
-    output_path = args.output or "params.json"
+    output_path  = args.output or "params.json"
     json_results = {
         ep: [{"param": p, "reason": r} for p, r in params]
         for ep, params in results.items()
     }
     save_json(json_results, output_path)
-    print(f"[→] Results saved to '{output_path}'")
-    print(f"[→] Run scan: apisec scan --input endpoints.json --tests blind_sqli,xss,idor\n")
+    print(f"[->] Params saved to '{output_path}'")
+    print(f"[->] Run scan: apisec scan --input endpoints.json --tests all\n")
 
 
-def cmd_scan(args):
+def cmd_scan(args) -> None:
     """
     apisec scan --input endpoints.json [--tests sqli,xss]
     apisec scan --url URL --endpoint /users/1 [--tests all]
     """
-    endpoints = []
-    api_type  = "REST"
+    endpoints: list[str] = []
+    api_type:  str       = "REST"
 
     # Source 1: JSON file from discovery
-    if hasattr(args, "input") and args.input:
+    if getattr(args, "input", None):
         if not validate_input_file(args.input):
             sys.exit(1)
 
         disc = load_discovery_result(args.input)
         if not disc:
-            print("[!] Empty or malformed file.")
+            print("[!] Empty or malformed input file.")
             sys.exit(1)
 
         endpoints = disc.get("endpoints", [])
@@ -530,25 +616,26 @@ def cmd_scan(args):
             args.url = disc["target_url"]
 
         if not endpoints:
-            print("[!] No endpoints in file.")
+            print("[!] No endpoints found in input file.")
             sys.exit(1)
 
-        print(f"[→] API detected: {api_type} — {len(endpoints)} endpoint(s) loaded")
+        color = API_COLORS.get(api_type, "")
+        print(f"[->] API detected: {color}{api_type}{RESET} - {len(endpoints)} endpoint(s)")
 
     # Source 2: single endpoint from CLI
-    elif hasattr(args, "endpoint") and args.endpoint:
+    elif getattr(args, "endpoint", None):
         if not getattr(args, "url", None):
-            print("[!] --url required with --endpoint")
+            print("[!] --url is required when using --endpoint")
             sys.exit(1)
         if not validate_url(args.url):
             sys.exit(1)
-        base      = args.url.rstrip("/")
-        ep        = args.endpoint if args.endpoint.startswith("/") else f"/{args.endpoint}"
-        endpoints = [f"{base}{ep}"]
+
+        path      = args.endpoint if args.endpoint.startswith("/") else f"/{args.endpoint}"
+        endpoints = [f"{args.url.rstrip('/')}{path}"]
         api_type  = getattr(args, "api_type", "REST")
 
     else:
-        print("[!] Specify --input endpoints.json  or  --url URL --endpoint /path")
+        print("[!] Specify --input endpoints.json  OR  --url URL --endpoint /path")
         sys.exit(1)
 
     results = run_scan(endpoints, args, api_type=api_type)
@@ -562,12 +649,8 @@ def cmd_scan(args):
         save_json([r.to_dict() for r in results], args.output)
 
 
-def cmd_full(args):
-    """
-    apisec full --url URL --wordlist FILE [--tests all]
-    Discovery + Scan chained automatically.
-    """
-    # Step 1: Discovery
+def cmd_full(args) -> None:
+    """apisec full --url URL --wordlist FILE [--tests all]"""
     print("[1/2] Running discovery...\n")
     result = run_discovery(args)
     if result is None:
@@ -582,11 +665,14 @@ def cmd_full(args):
     api_type  = result.get("api_type", "REST")
 
     if not endpoints:
-        print("[!] No endpoints discovered — scan cancelled.")
+        print("[!] No endpoints discovered - scan cancelled.")
         sys.exit(0)
 
-    # Step 2: Scan
     print(f"\n[2/2] Running {api_type} scan on {len(endpoints)} endpoint(s)...\n")
+
+    # Pass endpoints.json path so run_scan can load the GraphQL schema
+    args.input = endpoints_path
+
     results = run_scan(endpoints, args, api_type=api_type)
 
     if args.json:
@@ -594,12 +680,13 @@ def cmd_full(args):
     else:
         print_scan_results(results)
 
-    scan_output = args.scan_output or "scan_results.json"
+    scan_output = getattr(args, "scan_output", None) or "scan_results.json"
     save_json([r.to_dict() for r in results], scan_output)
-    print(f"[→] Scan results saved to '{scan_output}'\n")
+    print(f"[->] Scan results saved to '{scan_output}'\n")
 
-def cmd_capture(args):
-    """apisec capture --url URL [--port 8080] [--output endpoints.json]"""
+
+def cmd_capture(args) -> None:
+    """apisec capture --url URL [--port 8080]"""
     capture = TrafficCapture(
         target_url   = args.url,
         proxy_port   = getattr(args, "proxy_port", 8080),
@@ -609,141 +696,121 @@ def cmd_capture(args):
     )
     capture.run()
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CLI Parser
-# ─────────────────────────────────────────────────────────────────────────────
+
+# -----------------------------------------------------------------------------
+#  CLI parser
+# -----------------------------------------------------------------------------
+
+def _common_args() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--timeout",    type=int, default=5,
+                   help="HTTP timeout in seconds (default: 5)")
+    p.add_argument("--token",      type=str, default=None,
+                   help="Bearer token for authenticated scans")
+    p.add_argument("--token-file", type=str, default=None, dest="token_file",
+                   help="Path to a file containing the Bearer token")
+    p.add_argument("--login-url",  type=str, default=None, dest="login_url",
+                   help="Login endpoint for auto-authentication")
+    p.add_argument("--username",   type=str, default=None,
+                   help="Username / email for auto-login")
+    p.add_argument("--password",   type=str, default=None,
+                   help="Password for auto-login")
+    p.add_argument("--login-body", type=str, default=None, dest="login_body",
+                   help="Raw JSON body for custom login requests")
+    p.add_argument("--output",     type=str, default=None,
+                   help="Output JSON file path")
+    p.add_argument("--json",       action="store_true",
+                   help="Print raw JSON output")
+    p.add_argument("--verbose",    action="store_true",
+                   help="Enable verbose logging")
+    p.add_argument("--deep",       action="store_true", default=False,
+                   help="Deep scan - enables time-based techniques (slower)")
+    return p
+
 
 def build_parser() -> argparse.ArgumentParser:
+    common = _common_args()
+
     parser = argparse.ArgumentParser(
-        description="APISec — API Security Audit Tool | REST | GraphQL | SOAP",
-        formatter_class=argparse.RawTextHelpFormatter,
-        epilog="""
+        prog            = "apisec",
+        description     = "APISec - API Security Audit Tool | REST . GraphQL . SOAP",
+        formatter_class = argparse.RawTextHelpFormatter,
+        epilog = f"""
 Examples:
-  # Step 1 — Discovery → generates endpoints.json
   apisec discovery --url https://api.example.com --wordlist wordlists/api.txt
+  apisec params    --input endpoints.json
+  apisec scan      --input endpoints.json --tests all
+  apisec scan      --url https://api.example.com --endpoint /users/1 --tests sqli,idor
+  apisec full      --url https://api.example.com --wordlist wordlists/api.txt --tests all
+  apisec capture   --url https://api.example.com --port 8080
 
-  # Step 2 — Parameter discovery → generates params.json
-  apisec params --input endpoints.json
-  apisec params --input endpoints.json --wordlist wordlists/params-large.txt
-
-  # Step 3 — Vulnerability scan
-  apisec scan --input endpoints.json --tests all
-  apisec scan --url https://api.example.com --endpoint /users/1 --tests sqli,idor
-
-  # Full pipeline (discovery + scan)
-  apisec full --url https://api.example.com --wordlist wordlists/api.txt --tests all
-        """
+Available tests: {", ".join(ALL_TESTS)}
+        """,
     )
 
-    subparsers = parser.add_subparsers(dest="command", metavar="command")
-    subparsers.required = True
+    subs = parser.add_subparsers(dest="command", metavar="command")
+    subs.required = True
 
-    # ── Shared arguments ──────────────────────────────────────────────────────
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--timeout",    type=int, default=5,    help="HTTP timeout in seconds (default: 5)")
-    common.add_argument("--token",      type=str, default=None, help="Bearer authentication token")
-    common.add_argument("--token-file", type=str, default=None, dest="token_file", help="Path to a file containing the Bearer token")
-    common.add_argument("--login-url",  type=str, default=None, dest="login_url",  help="Login endpoint (e.g. /identity/api/auth/login)")
-    common.add_argument("--username",   type=str, default=None, help="Username or email for auto-login")
-    common.add_argument("--password",   type=str, default=None, help="Password for auto-login")
-    common.add_argument("--login-body", type=str, default=None, dest="login_body", help="Raw JSON login body")
-    common.add_argument("--output",     type=str, default=None, help="Output JSON file path")
-    common.add_argument("--json",       action="store_true",    help="Raw JSON output")
-    common.add_argument("--verbose",    action="store_true",    help="Detailed logs")
-    common.add_argument(
-        "--deep",
-        action  = "store_true",
-        default = False,
-        help    = "Deep scan — enables time-based SQLi techniques (slower but more thorough)"
-    )
-    # ── discovery ─────────────────────────────────────────────────────────────
-    p_disc = subparsers.add_parser(
-        "discovery",
-        parents=[common],
-        help="Detect API type and crawl endpoints",
-        description="Phase 1 — Discovery: detects the API type and lists available endpoints.",
-    )
-    p_disc.add_argument("--url",      required=True, help="Target URL (e.g. https://api.example.com)")
-    p_disc.add_argument("--wordlist", required=True, help="Path to wordlist file")
-    p_disc.add_argument("--mode",     choices=["quick", "full"], default="quick",
-                        help="quick = 50 paths max  |  full = complete wordlist")
-    p_disc.set_defaults(func=cmd_discovery)
+    # discovery
+    p = subs.add_parser("discovery", parents=[common],
+                        help="Detect API type and collect endpoints")
+    p.add_argument("--url",      required=True, help="Target URL")
+    p.add_argument("--wordlist", required=True, help="Endpoint wordlist")
+    p.add_argument("--mode", choices=["quick", "full"], default="quick",
+                   help="quick = first 50 paths  |  full = entire wordlist")
+    p.set_defaults(func=cmd_discovery)
 
-    # ── params ────────────────────────────────────────────────────────────────
-    p_params = subparsers.add_parser(
-        "params",
-        parents=[common],
-        help="Discover real parameters for each endpoint (like Arjun)",
-        description="Phase 2 — Parameter Discovery: finds real HTTP parameters accepted by each endpoint.",
-    )
-    p_params.add_argument("--input",    required=True, type=str,
-                          help="JSON file from discovery (e.g. endpoints.json)")
-    p_params.add_argument("--wordlist", type=str, default=None,
-                          help="Custom params wordlist (default: Arjun large.txt or wordlists/params-large.txt)")
-    p_params.set_defaults(func=cmd_params)
+    # params
+    p = subs.add_parser("params", parents=[common],
+                        help="Discover HTTP parameters (REST only)")
+    p.add_argument("--input",    required=True, help="endpoints.json from discovery")
+    p.add_argument("--wordlist", default=None,  help="Custom params wordlist")
+    p.set_defaults(func=cmd_params)
 
-    # ── scan ──────────────────────────────────────────────────────────────────
-    p_scan = subparsers.add_parser(
-        "scan",
-        parents=[common],
-        help="Test endpoints for vulnerabilities",
-        description="Phase 3 — Scan: tests endpoints for vulnerabilities (SQLi, XSS, IDOR, etc.).",
-    )
-    p_scan.add_argument("--input",    type=str, default=None,
-                        help="JSON file from discovery (e.g. endpoints.json)")
-    p_scan.add_argument("--url",      type=str, default=None,
-                        help="Base URL (required with --endpoint)")
-    p_scan.add_argument("--endpoint", type=str, default=None,
-                        help="Single endpoint to test (e.g. /users/1)")
-    p_scan.add_argument("--tests",    type=str, default="all",
-                        help="Tests to run: all | sqli,xss,idor,auth,blind_sqli,nosql,ssrf,misconfig,mass_assign,rate_limit")
-    p_scan.set_defaults(func=cmd_scan)
+    # scan
+    p = subs.add_parser("scan", parents=[common],
+                        help="Test endpoints for vulnerabilities")
+    p.add_argument("--input",    default=None, help="endpoints.json from discovery")
+    p.add_argument("--url",      default=None, help="Base URL (used with --endpoint)")
+    p.add_argument("--endpoint", default=None, help="Single path to test (e.g. /users/1)")
+    p.add_argument("--tests",    default="all",
+                   help=f"Tests: all | {chr(44).join(ALL_TESTS)}")
+    p.set_defaults(func=cmd_scan)
 
-    # ── full ──────────────────────────────────────────────────────────────────
-    p_full = subparsers.add_parser(
-        "full",
-        parents=[common],
-        help="Discovery + Scan chained",
-        description="Full pipeline: discovery then automatic scan of found endpoints.",
-    )
-    p_full.add_argument("--url",         required=True, help="Target URL")
-    p_full.add_argument("--wordlist",    required=True, help="Path to wordlist file")
-    p_full.add_argument("--mode",        choices=["quick", "full"], default="quick",
-                        help="quick = 50 paths max  |  full = complete wordlist")
-    p_full.add_argument("--tests",       type=str, default="all",
-                        help="Tests to run: all | sqli,xss,idor,auth,blind_sqli,nosql,ssrf,misconfig,mass_assign,rate_limit")
-    p_full.add_argument("--scan-output", type=str, default=None, dest="scan_output",
-                        help="Output file for scan results (e.g. scan_results.json)")
-    p_full.set_defaults(func=cmd_full)
+    # full
+    p = subs.add_parser("full", parents=[common],
+                        help="Discovery + Scan in one command")
+    p.add_argument("--url",         required=True, help="Target URL")
+    p.add_argument("--wordlist",    required=True, help="Endpoint wordlist")
+    p.add_argument("--mode",        choices=["quick", "full"], default="quick")
+    p.add_argument("--tests",       default="all",
+                   help=f"Tests: all | {chr(44).join(ALL_TESTS)}")
+    p.add_argument("--scan-output", default=None, dest="scan_output",
+                   help="Output file for scan results (default: scan_results.json)")
+    p.set_defaults(func=cmd_full)
 
-    #-----------------------capture--------
-    p_capture = subparsers.add_parser(
-    "capture",
-    parents=[common],
-    help="Capture traffic in real time via mitmproxy",
-    description="Capture HTTP/HTTPS traffic from browser and extract API endpoints.",
-    )
-    p_capture.add_argument("--url",          required=True, help="Target API URL")
-    p_capture.add_argument("--port",         type=int, default=8080, dest="proxy_port",
-                            help="Proxy port (default: 8080)")
-    p_capture.add_argument("--traffic-file", type=str, default="traffic.mitm",
-                            dest="traffic_file", help="Raw traffic output file")
-    p_capture.add_argument("--swagger-file", type=str, default="swagger_captured.yaml",
-                            dest="swagger_file", help="Intermediate swagger file")
-    p_capture.set_defaults(func=cmd_capture)
+    # capture
+    p = subs.add_parser("capture", parents=[common],
+                        help="Capture live traffic via mitmproxy")
+    p.add_argument("--url",          required=True, help="Target API URL")
+    p.add_argument("--port",         type=int, default=8080, dest="proxy_port")
+    p.add_argument("--traffic-file", default="traffic.mitm", dest="traffic_file")
+    p.add_argument("--swagger-file", default="swagger_captured.yaml", dest="swagger_file")
+    p.set_defaults(func=cmd_capture)
+
     return parser
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  Entry point
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
-def main():
+def main() -> None:
     print_banner()
     parser = build_parser()
     args   = parser.parse_args()
 
-    if args.verbose:
+    if getattr(args, "verbose", False):
         set_verbose(True)
         logger.info("[*] Verbose mode enabled")
 
