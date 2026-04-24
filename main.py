@@ -685,6 +685,63 @@ def cmd_full(args) -> None:
     print(f"[->] Scan results saved to '{scan_output}'\n")
 
 
+
+def cmd_schema(args) -> None:
+    """
+    apisec schema --input endpoints.json [--format both] [--output-dir ./schema]
+
+    Exports the GraphQL schema into formats ready to paste into visual tools:
+      - Voyager JSON : graphql-kit.com/graphql-voyager  (Introspection tab)
+      - SDL          : graphql-kit.com/graphql-voyager  (SDL tab)
+                       nathanrandal.com/graphql-visualizer
+
+    Only works with GraphQL discovery results (api_type == "GraphQL").
+    """
+    from core.graphql_export import export_schema
+
+    if not validate_input_file(args.input):
+        sys.exit(1)
+
+    fmt        = getattr(args, "fmt", "both")
+    output_dir = getattr(args, "output_dir", ".") or "."
+
+    print(f"[->] Exporting GraphQL schema from '{args.input}'...")
+    print(f"[->] Format     : {fmt}")
+    print(f"[->] Output dir : {output_dir}\n")
+
+    result = export_schema(
+        endpoints_json_path = args.input,
+        output_dir          = output_dir,
+        fmt                 = fmt,
+    )
+
+    if result is None:
+        sys.exit(1)
+
+    if not result.files:
+        print("[!] No files generated — check that the schema is not empty.")
+        sys.exit(1)
+
+    print("[+] Schema exported successfully:\n")
+    print(result)
+    print()
+    print("Usage:")
+    if result.voyager_path:
+        print(f"  1. Open  : https://graphql-kit.com/graphql-voyager/")
+        print(f"  2. Click : Change Schema -> Introspection")
+        print(f"  3. Paste : contents of {result.voyager_path}")
+        print()
+    if result.sdl_path:
+        print(f"  1. Open  : https://graphql-kit.com/graphql-voyager/")
+        print(f"  2. Click : Change Schema -> SDL")
+        print(f"  3. Paste : contents of {result.sdl_path}")
+        print()
+        print(f"  OR")
+        print()
+        print(f"  1. Open  : https://nathanrandal.com/graphql-visualizer/")
+        print(f"  2. Paste : contents of {result.sdl_path}")
+        print()
+
 def cmd_capture(args) -> None:
     """apisec capture --url URL [--port 8080]"""
     capture = TrafficCapture(
@@ -790,6 +847,18 @@ Available tests: {", ".join(ALL_TESTS)}
     p.set_defaults(func=cmd_full)
 
     # capture
+    # schema
+    p = subs.add_parser("schema", parents=[common],
+                        help="Export GraphQL schema for visual tools (Voyager, Nathan Randal)")
+    p.add_argument("--input",      required=True,
+                   help="endpoints.json from discovery")
+    p.add_argument("--format",     dest="fmt",
+                   choices=["voyager", "sdl", "both"], default="both",
+                   help="voyager = introspection JSON | sdl = SDL | both (default)")
+    p.add_argument("--output-dir", dest="output_dir", default=".",
+                   help="Directory for output files (default: current directory)")
+    p.set_defaults(func=cmd_schema)
+
     p = subs.add_parser("capture", parents=[common],
                         help="Capture live traffic via mitmproxy")
     p.add_argument("--url",          required=True, help="Target API URL")
