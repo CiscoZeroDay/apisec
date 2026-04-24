@@ -22,3 +22,4 @@ endpoints2.json
 .vscode/
 .idea/
 "@ | Out-File -Encoding utf8 .gitignore
+wordlists/clairvoyance-main/
