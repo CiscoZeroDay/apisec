@@ -36,28 +36,34 @@ from logger.logger import logger
 class ExportResult:
     """Holds the paths of generated export files."""
 
-    voyager_path: Optional[str] = None   # introspection JSON
+    voyager_path: Optional[str] = None   # {"data": {"__schema": ...}} for GraphQL Voyager
+    nathan_path:  Optional[str] = None   # {"__schema": ...} for Nathan Randal
     sdl_path:     Optional[str] = None   # SDL .graphql file
     fmt:          str           = "both"
 
     @property
     def files(self) -> list[str]:
-        return [p for p in (self.voyager_path, self.sdl_path) if p]
+        return [p for p in (self.voyager_path, self.nathan_path, self.sdl_path) if p]
 
     def __str__(self) -> str:
         lines = []
         if self.voyager_path:
             lines.append(
                 f"  Voyager JSON : {self.voyager_path}\n"
-                "    → graphql-kit.com/graphql-voyager  "
-                "→ Change Schema → Introspection → paste"
+                "    → graphql-kit.com/graphql-voyager\n"
+                "      Change Schema → Introspection → paste"
+            )
+        if self.nathan_path:
+            lines.append(
+                f"  Nathan JSON  : {self.nathan_path}\n"
+                "    → nathanrandal.com/graphql-visualizer\n"
+                "      paste directly"
             )
         if self.sdl_path:
             lines.append(
                 f"  SDL          : {self.sdl_path}\n"
-                "    → graphql-kit.com/graphql-voyager  "
-                "→ Change Schema → SDL → paste\n"
-                "    → nathanrandal.com/graphql-visualizer → paste"
+                "    → graphql-kit.com/graphql-voyager\n"
+                "      Change Schema → SDL → paste"
             )
         return "\n".join(lines)
 
@@ -106,6 +112,10 @@ class GraphQLSchemaExporter:
             path = self._export_voyager(output_dir)
             if path:
                 result.voyager_path = path
+
+            path = self._export_nathan(output_dir)
+            if path:
+                result.nathan_path = path
 
         if fmt in ("sdl", "both"):
             path = self._export_sdl(output_dir)
@@ -235,6 +245,43 @@ class GraphQLSchemaExporter:
                 }
             }
         }
+
+    # -------------------------------------------------------------------------
+    #  Nathan Randal export
+    # -------------------------------------------------------------------------
+
+    def _export_nathan(self, output_dir: str) -> Optional[str]:
+        """
+        Write the introspection payload in the exact format Nathan Randal expects.
+
+        Nathan Randal visualizer (nathanrandal.com/graphql-visualizer) expects
+        the __schema object directly — without the "data" envelope:
+            { "__schema": { ... } }
+        """
+        raw = self._schema.get("raw_introspection")
+
+        if raw and isinstance(raw, dict) and "data" in raw:
+            # Strip the "data" wrapper — Nathan wants {"__schema": ...} directly
+            schema_obj = raw["data"].get("__schema")
+        elif raw and isinstance(raw, dict) and "__schema" in raw:
+            schema_obj = raw["__schema"]
+        else:
+            # Reconstruct and unwrap
+            reconstructed = self._reconstruct_introspection()
+            schema_obj = reconstructed.get("data", {}).get("__schema")
+
+        if not schema_obj:
+            return None
+
+        payload = {"__schema": schema_obj}
+
+        path = os.path.join(output_dir, "schema_nathan.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            return path
+        except OSError as e:
+            return None
 
     # -------------------------------------------------------------------------
     #  SDL export

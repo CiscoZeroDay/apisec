@@ -727,19 +727,21 @@ def cmd_schema(args) -> None:
     print()
     print("Usage:")
     if result.voyager_path:
+        print(f"  [GraphQL Voyager]")
         print(f"  1. Open  : https://graphql-kit.com/graphql-voyager/")
         print(f"  2. Click : Change Schema -> Introspection")
         print(f"  3. Paste : contents of {result.voyager_path}")
         print()
+    if result.nathan_path:
+        print(f"  [Nathan Randal Visualizer]")
+        print(f"  1. Open  : https://nathanrandal.com/graphql-visualizer/")
+        print(f"  2. Paste : contents of {result.nathan_path}")
+        print()
     if result.sdl_path:
+        print(f"  [GraphQL Voyager — SDL tab]")
         print(f"  1. Open  : https://graphql-kit.com/graphql-voyager/")
         print(f"  2. Click : Change Schema -> SDL")
         print(f"  3. Paste : contents of {result.sdl_path}")
-        print()
-        print(f"  OR")
-        print()
-        print(f"  1. Open  : https://nathanrandal.com/graphql-visualizer/")
-        print(f"  2. Paste : contents of {result.sdl_path}")
         print()
 
 def cmd_capture(args) -> None:
