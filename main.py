@@ -1012,7 +1012,40 @@ def cmd_schema(args) -> None:
         print()
 
 def cmd_capture(args) -> None:
-    """apisec capture --url URL [--port 8080]"""
+    """
+    apisec capture --url URL [--port 8080]
+    apisec capture --url URL --read traffic.mitm
+    apisec capture --url URL --read traffic.mitm --requests-output requests.json
+    """
+    from core.traffic_capture import TrafficCapture, TrafficReader
+
+    read_file = getattr(args, "read", None)
+
+    # ── Mode lecture : analyser un fichier .mitm existant ────────────────────
+    if read_file:
+        if not os.path.isfile(read_file):
+            print(f"[!] File not found: {read_file}")
+            sys.exit(1)
+
+        reader = TrafficReader(
+            target_url     = args.url,
+            endpoints_path = args.output or "endpoints.json",
+            requests_path  = getattr(args, "requests_output", None) or "requests.json",
+        )
+        result = reader.read(read_file)
+        reader.print_summary(result)
+
+        if args.json:
+            print(json.dumps({
+                "api_type":   result.api_type,
+                "total":      result.total_flows,
+                "api_flows":  result.api_flows,
+                "gql_flows":  result.gql_flows,
+                "endpoints":  result.endpoints,
+            }, indent=2))
+        return
+
+    # ── Mode capture live ─────────────────────────────────────────────────────
     capture = TrafficCapture(
         target_url   = args.url,
         proxy_port   = getattr(args, "proxy_port", 8080),
@@ -1145,11 +1178,19 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
     p.set_defaults(func=cmd_schema)
 
     p = subs.add_parser("capture", parents=[common],
-                        help="Capture live traffic via mitmproxy")
-    p.add_argument("--url",          required=True, help="Target API URL")
-    p.add_argument("--port",         type=int, default=8080, dest="proxy_port")
-    p.add_argument("--traffic-file", default="traffic.mitm", dest="traffic_file")
-    p.add_argument("--swagger-file", default="swagger_captured.yaml", dest="swagger_file")
+                        help="Capture live traffic OR read existing .mitm file")
+    p.add_argument("--url",              required=True,
+                   help="Target API URL")
+    p.add_argument("--port",             type=int, default=8080, dest="proxy_port",
+                   help="Proxy port for live capture (default: 8080)")
+    p.add_argument("--read",             default=None, metavar="FILE",
+                   help="Read and analyze an existing .mitm file instead of capturing")
+    p.add_argument("--requests-output",  default="requests.json", dest="requests_output",
+                   help="Output file for full request details (default: requests.json)")
+    p.add_argument("--traffic-file",     default="traffic.mitm", dest="traffic_file",
+                   help="Output file for raw mitmproxy flows (default: traffic.mitm)")
+    p.add_argument("--swagger-file",     default="swagger_captured.yaml", dest="swagger_file",
+                   help="Intermediate OpenAPI spec file (default: swagger_captured.yaml)")
     p.set_defaults(func=cmd_capture)
 
     return parser

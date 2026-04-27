@@ -86,21 +86,34 @@ _IGNORE_PATHS = {
 class CaptureResult:
     """Structured result from a traffic capture session."""
 
-    target_url:   str
-    api_type:     str            = "REST"
-    endpoints:    list[str]      = field(default_factory=list)
-    flow_count:   int            = 0
-    api_flows:    int            = 0
-    traffic_file: Optional[str] = None
-    swagger_file: Optional[str] = None
+    target_url:        str
+    api_type:          str            = "REST"
+    endpoints:         list[str]      = field(default_factory=list)
+    captured_queries:  list[dict]     = field(default_factory=list)  # GraphQL queries observed
+    flow_count:        int            = 0
+    api_flows:         int            = 0
+    traffic_file:      Optional[str] = None
+    swagger_file:      Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "target_url": self.target_url,
             "api_type":   self.api_type,
             "endpoints":  self.endpoints,
             "source":     "traffic_capture",
         }
+        # Include captured GraphQL queries in schema section
+        if self.captured_queries:
+            result["schema"] = {
+                "method":            "traffic_capture",
+                "endpoint":          next((e for e in self.endpoints if "graphql" in e.lower()), ""),
+                "captured_queries":  self.captured_queries,
+                "queries":           [],
+                "mutations":         [],
+                "types":             [],
+                "raw_introspection": None,
+            }
+        return result
 
 
 # =============================================================================
@@ -145,13 +158,16 @@ class _RealtimeDisplay:
     mitmproxy addon that displays captured API requests in real time.
     Only shows requests targeting the specified API host.
     Filters out static assets and duplicate paths.
+    Captures GraphQL query bodies for later analysis.
     """
 
     def __init__(self, target_host: str) -> None:
-        self.target_host  = target_host.lower()
-        self.flow_count   = 0
-        self.api_flows    = 0
-        self._seen_paths: set[str] = set()
+        self.target_host     = target_host.lower()
+        self.flow_count      = 0
+        self.api_flows       = 0
+        self.gql_queries:    list[dict] = []   # captured GraphQL operations
+        self._seen_paths:    set[str]   = set()
+        self._seen_gql:      set[str]   = set()  # dedup GraphQL queries
 
     def request(self, flow) -> None:
         """Display each intercepted API request in the terminal."""
@@ -162,7 +178,7 @@ class _RealtimeDisplay:
 
         self.flow_count += 1
 
-        # Only display requests targeting our API
+        # Only process requests targeting our API
         if self.target_host not in host:
             return
 
@@ -173,11 +189,623 @@ class _RealtimeDisplay:
 
         self.api_flows += 1
 
-        # Display each unique path only once
+        # ── Capture GraphQL query bodies ──────────────────────────────────────
+        is_graphql = "graphql" in path.lower() or "gql" in path.lower()
+
+        if is_graphql and method == "POST":
+            try:
+                body = flow.request.get_text(strict=False) or ""
+                if body:
+                    import json as _json
+                    payload = _json.loads(body)
+
+                    # Handle both single queries and batch arrays
+                    items = payload if isinstance(payload, list) else [payload]
+                    for item in items:
+                        query    = item.get("query", "").strip()
+                        variables = item.get("variables")
+                        op_name  = item.get("operationName")
+
+                        if query and query not in self._seen_gql:
+                            self._seen_gql.add(query)
+                            entry = {"query": query}
+                            if variables:
+                                entry["variables"] = variables
+                            if op_name:
+                                entry["operationName"] = op_name
+                            self.gql_queries.append(entry)
+                            # Show GraphQL operation type
+                            op_type = "mutation" if query.strip().startswith("mutation") else "query"
+                            print(f"  \033[92m[+]\033[0m {method:<7} {url}  \033[94m[GQL:{op_type}]\033[0m")
+                        elif query:
+                            # Already seen this exact query — just show the request
+                            pass
+            except Exception:
+                pass
+
+        # Display each unique path only once (for non-GQL or GQL GET)
         if path not in self._seen_paths:
             self._seen_paths.add(path)
-            print(f"  \033[92m[+]\033[0m {method:<7} {url}")
+            if not is_graphql:
+                print(f"  \033[92m[+]\033[0m {method:<7} {url}")
 
+
+
+# =============================================================================
+#  TrafficReader — Read and analyze existing .mitm flow files
+# =============================================================================
+
+# GraphQL detection signals
+_GQL_PATHS      = {"/graphql", "/api/graphql", "/graphql/v1", "/v1/graphql", "/gql", "/query"}
+_GQL_PATH_HINTS = ("graphql", "/gql", "graphiql")
+_SOAP_HINTS     = (".wsdl", "/service", "soap", "text/xml", "application/soap")
+
+# Content types that indicate API traffic
+_API_CONTENT_TYPES = (
+    "application/json",
+    "application/graphql",
+    "text/xml",
+    "application/soap+xml",
+    "application/x-www-form-urlencoded",
+)
+
+# Static asset extensions to skip
+_STATIC_EXTENSIONS = {
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map",
+    ".html", ".htm", ".txt", ".pdf", ".zip", ".gz",
+}
+
+
+@dataclass
+class CapturedRequest:
+    """
+    A single captured HTTP request with its response.
+    Stored in requests.json — kept separate from endpoints.json.
+    """
+    index:        int
+    method:       str
+    url:          str
+    path:         str
+    status_code:  int
+    request_headers:  dict
+    response_headers: dict
+    request_body:     Optional[str]   = None
+    response_body:    Optional[str]   = None
+    api_type:         str             = "REST"    # REST | GraphQL | SOAP
+    gql_operation:    Optional[str]   = None      # query | mutation | subscription
+    gql_query:        Optional[str]   = None      # the actual GraphQL query string
+    error:            Optional[str]   = None
+
+    def to_dict(self) -> dict:
+        d = {
+            "index":            self.index,
+            "method":           self.method,
+            "url":              self.url,
+            "path":             self.path,
+            "status_code":      self.status_code,
+            "request_headers":  self.request_headers,
+            "response_headers": self.response_headers,
+        }
+        if self.request_body:
+            d["request_body"]  = self.request_body
+        if self.response_body:
+            d["response_body"] = self.response_body
+        if self.api_type != "REST":
+            d["api_type"]      = self.api_type
+        if self.gql_operation:
+            d["gql_operation"] = self.gql_operation
+        if self.gql_query:
+            d["gql_query"]     = self.gql_query
+        if self.error:
+            d["error"]         = self.error
+        return d
+
+
+@dataclass
+class ReadResult:
+    """
+    Result of reading a .mitm flow file.
+    Produces two separate output files:
+      - endpoints.json  : unique URLs + api_type detection
+      - requests.json   : all requests with full bodies and metadata
+    """
+    source_file:      str
+    target_url:       str
+    api_type:         str               = "REST"
+    requests:         list              = field(default_factory=list)   # list[CapturedRequest]
+    endpoints:        list[str]         = field(default_factory=list)
+    gql_queries:      list[dict]        = field(default_factory=list)
+    total_flows:      int               = 0
+    api_flows:        int               = 0
+    gql_flows:        int               = 0
+    soap_flows:       int               = 0
+
+    @property
+    def summary(self) -> str:
+        lines = [
+            f"Source         : {self.source_file}",
+            f"API type       : {self.api_type}",
+            f"Total flows    : {self.total_flows}",
+            f"API flows      : {self.api_flows}",
+        ]
+        if self.gql_flows:
+            lines.append(f"GraphQL ops    : {self.gql_flows}")
+        if self.soap_flows:
+            lines.append(f"SOAP ops       : {self.soap_flows}")
+        lines.append(f"Unique endpoints: {len(self.endpoints)}")
+        return "\n".join(f"  {l}" for l in lines)
+
+
+class TrafficReader:
+    """
+    Reads and analyzes a mitmproxy .mitm flow file.
+
+    Produces two separate outputs:
+      - endpoints.json  : unique endpoint URLs with api_type detection
+                          (compatible with apisec scan pipeline)
+      - requests.json   : all captured requests with full HTTP details,
+                          bodies, GraphQL queries, SOAP envelopes
+
+    GraphQL detection:
+      - Path contains /graphql, /gql, graphiql
+      - Content-Type: application/json + body contains "query" key
+      - Body starts with { or [ and contains __schema, mutation, query keyword
+
+    Args:
+        target_url       : base URL of the target API
+        endpoints_path   : output path for endpoints.json (default: endpoints.json)
+        requests_path    : output path for requests.json  (default: requests.json)
+        max_body_size    : max response body size to store in bytes (default: 10KB)
+        filter_target    : if True, only process flows targeting target_url
+    """
+
+    def __init__(
+        self,
+        target_url:     str,
+        endpoints_path: str  = "endpoints.json",
+        requests_path:  str  = "requests.json",
+        max_body_size:  int  = 10_240,
+        filter_target:  bool = True,
+    ) -> None:
+        self.target_url     = target_url.rstrip("/")
+        self.endpoints_path = endpoints_path
+        self.requests_path  = requests_path
+        self.max_body_size  = max_body_size
+        self.filter_target  = filter_target
+
+        parsed           = urlparse(self.target_url)
+        self.target_host = parsed.hostname or ""
+
+    # =========================================================================
+    #  Public entry point
+    # =========================================================================
+
+    def read(self, mitm_file: str) -> ReadResult:
+        """
+        Parse a .mitm flow file and produce endpoints.json + requests.json.
+
+        Args:
+            mitm_file : path to the .mitm file (e.g. traffic.mitm)
+
+        Returns:
+            ReadResult with all parsed data.
+        """
+        if not Path(mitm_file).exists():
+            logger.error(f"[reader] File not found: {mitm_file}")
+            return ReadResult(source_file=mitm_file, target_url=self.target_url)
+
+        if Path(mitm_file).stat().st_size == 0:
+            logger.error(f"[reader] File is empty: {mitm_file}")
+            return ReadResult(source_file=mitm_file, target_url=self.target_url)
+
+        result = ReadResult(source_file=mitm_file, target_url=self.target_url)
+
+        try:
+            import mitmproxy.io as mitm_io
+        except ImportError:
+            logger.error("[reader] mitmproxy not installed — pip install mitmproxy")
+            return result
+
+        logger.info(f"[reader] Reading {mitm_file}...")
+
+        try:
+            with open(mitm_file, "rb") as f:
+                reader = mitm_io.FlowReader(f)
+                for flow in reader.stream():
+                    try:
+                        self._process_flow(flow, result)
+                    except Exception as e:
+                        logger.debug(f"[reader] Flow parse error: {e}")
+        except Exception as e:
+            logger.error(f"[reader] Cannot read {mitm_file}: {e}")
+            return result
+
+        # Detect overall API type
+        result.api_type = self._detect_api_type(result)
+
+        logger.info(
+            f"[reader] Parsed {result.total_flows} flows — "
+            f"{result.api_flows} API | {result.gql_flows} GraphQL | "
+            f"{len(result.endpoints)} unique endpoints"
+        )
+
+        # Save outputs
+        self._save_endpoints(result)
+        self._save_requests(result)
+
+        return result
+
+    # =========================================================================
+    #  Flow processing
+    # =========================================================================
+
+    def _process_flow(self, flow, result: ReadResult) -> None:
+        """Parse a single mitmproxy flow into a CapturedRequest."""
+        # Only handle HTTP flows
+        if not hasattr(flow, "request") or not hasattr(flow, "response"):
+            return
+        if flow.response is None:
+            return
+
+        result.total_flows += 1
+
+        req  = flow.request
+        resp = flow.response
+        host = req.pretty_host.lower()
+        path = req.path.split("?")[0]
+        url  = req.pretty_url
+
+        # Filter by target host if requested
+        if self.filter_target and self.target_host and self.target_host not in host:
+            return
+
+        # Skip static assets
+        ext = Path(path).suffix.lower()
+        if ext in _STATIC_EXTENSIONS:
+            return
+
+        # Skip non-API content types (only for responses with content-type header)
+        resp_ct = (resp.headers.get("content-type") or "").lower()
+        if resp_ct and not any(ct in resp_ct for ct in ("json", "xml", "graphql", "text/plain")):
+            if resp_ct.startswith(("text/html", "image/", "font/")):
+                return
+
+        result.api_flows += 1
+
+        # ── Parse request body ────────────────────────────────────────────────
+        req_body:     Optional[str] = None
+        req_body_raw: Optional[str] = None
+        try:
+            raw = req.get_text(strict=False)
+            if raw and raw.strip():
+                req_body_raw = raw.strip()
+                # Truncate large bodies
+                if len(req_body_raw) > self.max_body_size:
+                    req_body = req_body_raw[:self.max_body_size] + "... [truncated]"
+                else:
+                    req_body = req_body_raw
+        except Exception:
+            pass
+
+        # ── Parse response body ───────────────────────────────────────────────
+        resp_body: Optional[str] = None
+        try:
+            raw_resp = resp.get_text(strict=False)
+            if raw_resp and raw_resp.strip():
+                if len(raw_resp) > self.max_body_size:
+                    resp_body = raw_resp[:self.max_body_size] + "... [truncated]"
+                else:
+                    resp_body = raw_resp
+        except Exception:
+            pass
+
+        # ── Classify request type ─────────────────────────────────────────────
+        api_type, gql_op, gql_query = self._classify_request(
+            path      = path,
+            method    = req.method,
+            req_ct    = (req.headers.get("content-type") or "").lower(),
+            body_raw  = req_body_raw,
+        )
+
+        # ── Update counters ───────────────────────────────────────────────────
+        if api_type == "GraphQL":
+            result.gql_flows += 1
+            if gql_query and gql_query not in [q.get("query") for q in result.gql_queries]:
+                entry = {"query": gql_query}
+                if gql_op:
+                    entry["operation"] = gql_op
+                result.gql_queries.append(entry)
+        elif api_type == "SOAP":
+            result.soap_flows += 1
+
+        # ── Track unique endpoints ────────────────────────────────────────────
+        parsed    = urlparse(url)
+        clean_url = f"{parsed.scheme}://{parsed.netloc}{path}"
+        if clean_url not in result.endpoints:
+            result.endpoints.append(clean_url)
+
+        # ── Build request headers dict (filtered) ─────────────────────────────
+        req_headers  = self._safe_headers(req.headers,  ["authorization", "cookie", "content-type", "accept", "origin", "referer"])
+        resp_headers = self._safe_headers(resp.headers, ["content-type", "content-length", "set-cookie", "x-powered-by", "server"])
+
+        # ── Create CapturedRequest ────────────────────────────────────────────
+        captured = CapturedRequest(
+            index            = result.total_flows,
+            method           = req.method,
+            url              = url,
+            path             = path,
+            status_code      = resp.status_code,
+            request_headers  = req_headers,
+            response_headers = resp_headers,
+            request_body     = req_body,
+            response_body    = resp_body,
+            api_type         = api_type,
+            gql_operation    = gql_op,
+            gql_query        = gql_query,
+        )
+        result.requests.append(captured)
+
+    # =========================================================================
+    #  Classification
+    # =========================================================================
+
+    def _classify_request(
+        self,
+        path:     str,
+        method:   str,
+        req_ct:   str,
+        body_raw: Optional[str],
+    ) -> tuple[str, Optional[str], Optional[str]]:
+        """
+        Classify an HTTP request as GraphQL, SOAP, or REST.
+
+        Returns:
+            (api_type, gql_operation, gql_query)
+            api_type      : "GraphQL" | "SOAP" | "REST"
+            gql_operation : "query" | "mutation" | "subscription" | None
+            gql_query     : the GraphQL query string | None
+        """
+        path_lower = path.lower()
+
+        # ── SOAP detection ────────────────────────────────────────────────────
+        if any(hint in path_lower for hint in _SOAP_HINTS):
+            return "SOAP", None, None
+        if "text/xml" in req_ct or "soap" in req_ct:
+            return "SOAP", None, None
+
+        # ── GraphQL detection ─────────────────────────────────────────────────
+
+        # 1. Path-based detection (strongest signal)
+        path_is_gql = any(hint in path_lower for hint in _GQL_PATH_HINTS)
+
+        # 2. Body-based detection
+        gql_op    = None
+        gql_query = None
+
+        if body_raw and "application/json" in req_ct:
+            gql_op, gql_query = self._extract_gql_from_body(body_raw)
+
+        # 3. GET with query param
+        if not gql_query and method == "GET" and "query=" in path:
+            try:
+                from urllib.parse import parse_qs, urlparse as _up
+                qs = parse_qs(_up(path).query)
+                q  = (qs.get("query") or [""])[0]
+                if q and ("{" in q or "mutation" in q.lower()):
+                    gql_query = q
+                    gql_op    = "mutation" if q.strip().lower().startswith("mutation") else "query"
+                    path_is_gql = True
+            except Exception:
+                pass
+
+        if path_is_gql or gql_query:
+            return "GraphQL", gql_op, gql_query
+
+        return "REST", None, None
+
+    def _extract_gql_from_body(self, body: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Extract GraphQL operation type and query string from a JSON body.
+
+        Handles:
+          - Single query: {"query": "...", "variables": {...}}
+          - Batch:        [{"query": "..."}, {"query": "..."}]
+
+        Returns:
+            (operation_type, query_string)
+        """
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None, None
+
+        # Handle batch — take first item
+        if isinstance(payload, list):
+            payload = payload[0] if payload else {}
+
+        if not isinstance(payload, dict):
+            return None, None
+
+        query = payload.get("query", "").strip()
+        if not query:
+            return None, None
+
+        # Determine operation type
+        q_lower = query.lower().lstrip()
+        if q_lower.startswith("mutation"):
+            op = "mutation"
+        elif q_lower.startswith("subscription"):
+            op = "subscription"
+        elif q_lower.startswith("query") or q_lower.startswith("{"):
+            op = "query"
+        else:
+            return None, None
+
+        return op, query
+
+    # =========================================================================
+    #  API type detection
+    # =========================================================================
+
+    def _detect_api_type(self, result: ReadResult) -> str:
+        """
+        Determine the overall API type from all captured flows.
+
+        Priority: GraphQL > SOAP > REST
+        Decision based on majority of API flows, not just path hints.
+        """
+        total = result.api_flows or 1
+
+        if result.gql_flows / total > 0.3:   # >30% GraphQL flows → GraphQL API
+            return "GraphQL"
+        if result.soap_flows / total > 0.3:   # >30% SOAP flows    → SOAP API
+            return "SOAP"
+        return "REST"
+
+    # =========================================================================
+    #  Output
+    # =========================================================================
+
+    def _save_endpoints(self, result: ReadResult) -> None:
+        """
+        Save endpoints.json — URL list + api_type detection.
+        Compatible with: apisec scan --input endpoints.json
+        """
+        # Sort endpoints: GraphQL first, then alphabetical
+        gql_eps  = [e for e in result.endpoints if any(h in e.lower() for h in _GQL_PATH_HINTS)]
+        rest_eps = [e for e in result.endpoints if e not in gql_eps]
+
+        data: dict = {
+            "target_url":  self.target_url,
+            "api_type":    result.api_type,
+            "confidence":  1.0,
+            "score":       9 if result.api_type == "GraphQL" else 6,
+            "reasons":     [f"Traffic analysis — {result.gql_flows} GraphQL operations detected"]
+                           if result.api_type == "GraphQL" else
+                           [f"Traffic analysis — {result.api_flows} API requests captured"],
+            "endpoints":   gql_eps + rest_eps,
+            "tech_stack":  [],
+            "source":      "traffic_capture",
+        }
+
+        # Add schema stub for GraphQL with captured queries
+        if result.api_type == "GraphQL" and result.gql_queries:
+            data["schema"] = {
+                "method":           "traffic_capture",
+                "endpoint":         gql_eps[0] if gql_eps else self.target_url + "/graphql",
+                "captured_queries": result.gql_queries,
+                "queries":          [],
+                "mutations":        [],
+                "types":            [],
+                "raw_introspection": None,
+            }
+
+        try:
+            with open(self.endpoints_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"[reader] endpoints.json → {self.endpoints_path}")
+        except OSError as e:
+            logger.error(f"[reader] Cannot write {self.endpoints_path}: {e}")
+
+    def _save_requests(self, result: ReadResult) -> None:
+        """
+        Save requests.json — all captured requests with full HTTP details.
+        Separate from endpoints.json to avoid pollution.
+
+        Structure:
+        {
+          "source":      "traffic.mitm",
+          "target_url":  "https://...",
+          "api_type":    "GraphQL",
+          "total":       31,
+          "api_flows":   30,
+          "gql_flows":   25,
+          "summary": {
+            "unique_endpoints": 6,
+            "gql_operations":   25,
+          },
+          "requests": [ CapturedRequest.to_dict(), ... ]
+        }
+        """
+        data = {
+            "source":     result.source_file,
+            "target_url": self.target_url,
+            "api_type":   result.api_type,
+            "total":      result.total_flows,
+            "api_flows":  result.api_flows,
+            "gql_flows":  result.gql_flows,
+            "soap_flows": result.soap_flows,
+            "summary": {
+                "unique_endpoints": len(result.endpoints),
+                "gql_operations":   result.gql_flows,
+                "gql_unique":       len(result.gql_queries),
+            },
+            "requests": [r.to_dict() for r in result.requests],
+        }
+
+        try:
+            with open(self.requests_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"[reader] requests.json → {self.requests_path}")
+        except OSError as e:
+            logger.error(f"[reader] Cannot write {self.requests_path}: {e}")
+
+    # =========================================================================
+    #  Helpers
+    # =========================================================================
+
+    def _safe_headers(self, headers, keys: list[str]) -> dict:
+        """Extract specific headers, lowercasing keys."""
+        result = {}
+        for k in keys:
+            val = headers.get(k) or headers.get(k.title()) or headers.get(k.upper())
+            if val:
+                result[k] = val
+        return result
+
+    def print_summary(self, result: ReadResult) -> None:
+        """Display a formatted summary of the read operation."""
+        RESET  = "\033[0m"
+        BLUE   = "\033[94m"
+        GREEN  = "\033[92m"
+        YELLOW = "\033[93m"
+        BOLD   = "\033[1m"
+
+        print(f"""
+  {BLUE}╔══════════════════════════════════════════════════════╗
+  ║           APISec — Traffic Reader                    ║
+  ╚══════════════════════════════════════════════════════╝{RESET}
+
+{result.summary}
+
+  {BOLD}Requests breakdown:{RESET}""")
+
+        # Show first 20 requests
+        shown = 0
+        for r in result.requests[:20]:
+            if r.api_type == "GraphQL":
+                op    = f"  {BLUE}[GQL:{r.gql_operation or 'query'}]{RESET}"
+                query = f" {r.gql_query[:60]}..." if r.gql_query and len(r.gql_query) > 60 else f" {r.gql_query or ''}"
+                print(f"  {GREEN}#{r.index:<3}{RESET} {r.method:<7} {r.path:<35} → {r.status_code}{op}{query}")
+            elif r.api_type == "SOAP":
+                print(f"  {GREEN}#{r.index:<3}{RESET} {r.method:<7} {r.path:<35} → {r.status_code}  {YELLOW}[SOAP]{RESET}")
+            else:
+                print(f"  {GREEN}#{r.index:<3}{RESET} {r.method:<7} {r.path:<35} → {r.status_code}")
+            shown += 1
+
+        if len(result.requests) > 20:
+            print(f"  ... +{len(result.requests) - 20} more requests in {self.requests_path}")
+
+        print(f"""
+  {YELLOW}[→] Output files:{RESET}
+      endpoints.json : {self.endpoints_path}
+      requests.json  : {self.requests_path}
+
+  {YELLOW}[→] Next steps:{RESET}
+      apisec scan --input {self.endpoints_path} --tests all
+  {BLUE}══════════════════════════════════════════════════════{RESET}
+""")
 
 # =============================================================================
 #  TrafficCapture
@@ -694,14 +1322,31 @@ class TrafficCapture:
     #  Output
     # =========================================================================
 
-    def _save_endpoints(self, endpoints: list[str]) -> None:
-        """Save the extracted endpoints in apisec-compatible JSON format."""
-        data = {
-            "target_url": self.target_url,
-            "api_type":   "REST",
-            "endpoints":  endpoints,
-            "source":     "traffic_capture",
-        }
+    def _save_endpoints(self, result: "CaptureResult") -> None:
+        """
+        Save captured endpoints in apisec-compatible JSON format.
+
+        Automatically detects GraphQL if:
+          - Any endpoint URL contains /graphql or /gql
+          - Any GraphQL queries were captured
+        """
+        # Auto-detect API type
+        gql_endpoints = [e for e in result.endpoints if "graphql" in e.lower() or "/gql" in e.lower()]
+        is_graphql    = bool(gql_endpoints or result.captured_queries)
+        api_type      = "GraphQL" if is_graphql else "REST"
+
+        data = result.to_dict()
+        data["api_type"] = api_type
+
+        if is_graphql:
+            logger.info(
+                f"[capture] GraphQL detected — {len(result.captured_queries)} "
+                f"unique query/mutation(s) captured"
+            )
+            # Ensure the GraphQL endpoint is at the top of the list
+            sorted_endpoints = gql_endpoints + [e for e in result.endpoints if e not in gql_endpoints]
+            data["endpoints"] = sorted_endpoints
+
         try:
             with open(self.output_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -736,13 +1381,18 @@ class TrafficCapture:
 
     def _print_summary(self, result: CaptureResult) -> None:
         """Display a summary of the capture session."""
+        gql_line = ""
+        if result.captured_queries:
+            gql_line = f"\n      GraphQL operations    : {len(result.captured_queries)}"
+
         print(f"""
   \033[94m══════════════════════════════════════════════════════\033[0m
   \033[92m[✓] Capture complete\033[0m
 
       Total requests captured  : {result.flow_count}
       API requests captured    : {result.api_flows}
-      Unique endpoints found   : {len(result.endpoints)}
+      Unique endpoints found   : {len(result.endpoints)}{gql_line}
+      API type detected        : {result.api_type if hasattr(result, "api_type") else "REST"}
       Output file              : {self.output_path}
 
   \033[93m[→] Run scan:\033[0m
@@ -843,7 +1493,16 @@ class TrafficCapture:
             return result
 
         # ── Step 8: Save endpoints.json ───────────────────────────────────────
-        self._save_endpoints(result.endpoints)
+        # Collect captured GraphQL queries from the display addon
+        if self._display and hasattr(self._display, "gql_queries"):
+            result.captured_queries = self._display.gql_queries
+            if result.captured_queries:
+                logger.info(
+                    f"[capture] {len(result.captured_queries)} unique GraphQL "
+                    f"operation(s) captured"
+                )
+
+        self._save_endpoints(result)
 
         # ── Summary ───────────────────────────────────────────────────────────
         self._print_summary(result)
