@@ -1575,10 +1575,10 @@ class TrafficCapture:
       Total requests captured  : {result.flow_count}
       API requests captured    : {result.api_flows}
       Unique endpoints found   : {len(result.endpoints)}{gql_line}
-      API type detected        : {result.api_type if hasattr(result, "api_type") else "REST"}
       Output file              : {self.output_path}
 
-  \033[93m[→] Run scan:\033[0m
+  \033[93m[→] Next steps:\033[0m
+      apisec discovery --url {self.target_url} --wordlist wordlists/api-endpoints.txt
       apisec scan --input {self.output_path} --tests all
   \033[94m══════════════════════════════════════════════════════\033[0m
 """)
