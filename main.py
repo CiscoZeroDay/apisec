@@ -1011,15 +1011,55 @@ def cmd_schema(args) -> None:
         print(f"  3. Paste : contents of {result.sdl_path}")
         print()
 
+def _apply_capture_filter(requests: list, filter_type: str) -> list:
+    """
+    Filter captured requests by type or GraphQL operation.
+
+    Args:
+        requests    : list of CapturedRequest objects
+        filter_type : one of "graphql" | "mutations" | "queries" | "rest" | "soap"
+
+    Returns:
+        Filtered list — only requests matching the filter.
+        UI requests are always excluded regardless of filter.
+
+    Filter semantics:
+        graphql   → category == "GraphQL"  (all operations)
+        mutations → category == "GraphQL" AND gql_operation == "mutation"
+        queries   → category == "GraphQL" AND gql_operation in ("query", None)
+        rest      → category == "REST"
+        soap      → category == "SOAP"
+    """
+    ft = filter_type.lower().strip()
+
+    filter_map = {
+        "graphql":   lambda r: r.category == "GraphQL",
+        "mutations": lambda r: r.category == "GraphQL" and r.gql_operation == "mutation",
+        "queries":   lambda r: r.category == "GraphQL" and r.gql_operation in ("query", None),
+        "rest":      lambda r: r.category == "REST",
+        "soap":      lambda r: r.category == "SOAP",
+    }
+
+    predicate = filter_map.get(ft)
+    if predicate is None:
+        logger.warning(f"[filter] Unknown filter type: '{filter_type}' — no filter applied")
+        return [r for r in requests if r.category != "UI"]
+
+    return [r for r in requests if predicate(r)]
+
+
 def cmd_capture(args) -> None:
     """
     apisec capture --url URL [--port 8080]
     apisec capture --url URL --read traffic.mitm
-    apisec capture --url URL --read traffic.mitm --requests-output requests.json
+    apisec capture --url URL --read traffic.mitm --full-requests
+    apisec capture --url URL --read traffic.mitm --full-requests --filter graphql
     """
     from core.traffic_capture import TrafficCapture, TrafficReader
 
-    read_file = getattr(args, "read", None)
+    read_file      = getattr(args, "read", None)
+    full_requests  = getattr(args, "full_requests", False)
+    filter_type    = getattr(args, "filter_type", None)   # "graphql" | "rest" | "soap" | None
 
     # ── Mode lecture : analyser un fichier .mitm existant ────────────────────
     if read_file:
@@ -1033,16 +1073,29 @@ def cmd_capture(args) -> None:
             requests_path  = getattr(args, "requests_output", None) or "requests.json",
         )
         result = reader.read(read_file)
+
+        # Apply filter if requested
+        if filter_type:
+            result.requests = _apply_capture_filter(result.requests, filter_type)
+            logger.info(
+                f"[reader] Filter: '{filter_type}' — "
+                f"{len(result.requests)} request(s) match"
+            )
+
+        # Always show the summary
         reader.print_summary(result)
+
+        # Show full request details if requested
+        if full_requests:
+            reader.print_full_requests(result)
 
         if args.json:
             print(json.dumps({
-                "api_type":   result.api_type,
                 "total":      result.total_flows,
-                "api_flows":  result.api_flows,
-                "gql_flows":  result.gql_flows,
-                "endpoints":  result.endpoints,
-            }, indent=2))
+                "api_flows":  sum(1 for r in result.requests if r.category != "UI"),
+                "gql_flows":  sum(1 for r in result.requests if r.category == "GraphQL"),
+                "requests":   [r.to_dict() for r in result.requests if r.category != "UI"],
+            }, indent=2, ensure_ascii=False))
         return
 
     # ── Mode capture live ─────────────────────────────────────────────────────
@@ -1184,9 +1237,21 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
     p.add_argument("--port",             type=int, default=8080, dest="proxy_port",
                    help="Proxy port for live capture (default: 8080)")
     p.add_argument("--read",             default=None, metavar="FILE",
-                   help="Read and analyze an existing .mitm file instead of capturing")
+                   help="Read and analyze an existing .mitm file instead of live capture")
+    p.add_argument("--full-requests",    action="store_true", default=False, dest="full_requests",
+                   help="Display complete request/response details after the summary")
+    p.add_argument("--filter",           default=None, dest="filter_type",
+                   choices=["graphql", "mutations", "queries", "rest", "soap"],
+                   help=(
+                       "Filter requests to display:\n"
+                       "  graphql   — all GraphQL requests\n"
+                       "  mutations — GraphQL mutations only\n"
+                       "  queries   — GraphQL queries only\n"
+                       "  rest      — REST requests only\n"
+                       "  soap      — SOAP requests only"
+                   ))
     p.add_argument("--requests-output",  default="requests.json", dest="requests_output",
-                   help="Output file for full request details (default: requests.json)")
+                   help="Output file for request details (default: requests.json)")
     p.add_argument("--traffic-file",     default="traffic.mitm", dest="traffic_file",
                    help="Output file for raw mitmproxy flows (default: traffic.mitm)")
     p.add_argument("--swagger-file",     default="swagger_captured.yaml", dest="swagger_file",

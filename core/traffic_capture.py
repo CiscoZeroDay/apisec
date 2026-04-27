@@ -232,50 +232,59 @@ class _RealtimeDisplay:
 
 
 # =============================================================================
-#  TrafficReader — Read and analyze existing .mitm flow files
+#  TrafficReader — Read and display .mitm flow files
+# =============================================================================
+#
+#  Responsibilities:
+#    - Parse mitmproxy .mitm flow files
+#    - Separate GraphQL operations from REST/UI traffic
+#    - Display a clean, auditor-friendly summary
+#    - Save two separate output files:
+#        endpoints.json  → unique API endpoints (for apisec scan)
+#        requests.json   → full HTTP details with bodies
+#
+#  NOT responsible for:
+#    - API type detection (that is discovery's job)
+#    - Vulnerability scanning
+#    - Schema analysis
 # =============================================================================
 
-# GraphQL detection signals
-_GQL_PATHS      = {"/graphql", "/api/graphql", "/graphql/v1", "/v1/graphql", "/gql", "/query"}
+# GraphQL path signals
 _GQL_PATH_HINTS = ("graphql", "/gql", "graphiql")
-_SOAP_HINTS     = (".wsdl", "/service", "soap", "text/xml", "application/soap")
 
-# Content types that indicate API traffic
-_API_CONTENT_TYPES = (
-    "application/json",
-    "application/graphql",
-    "text/xml",
-    "application/soap+xml",
-    "application/x-www-form-urlencoded",
-)
+# SOAP signals
+_SOAP_CT_HINTS  = ("text/xml", "application/soap+xml")
+_SOAP_PATH_HINTS = (".wsdl", "soap", "/service")
 
-# Static asset extensions to skip
+# Static asset extensions — filtered out of display
 _STATIC_EXTENSIONS = {
     ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
     ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map",
-    ".html", ".htm", ".txt", ".pdf", ".zip", ".gz",
+    ".html", ".htm", ".pdf", ".zip", ".gz",
 }
+
+# Paths that are clearly UI / frontend — not API
+_UI_PATH_HINTS = (
+    "labheader", "favicon", "static", "assets",
+    "robots.txt", "sitemap", "manifest",
+)
 
 
 @dataclass
 class CapturedRequest:
-    """
-    A single captured HTTP request with its response.
-    Stored in requests.json — kept separate from endpoints.json.
-    """
-    index:        int
-    method:       str
-    url:          str
-    path:         str
-    status_code:  int
+    """Single captured HTTP request with its response."""
+    index:            int
+    method:           str
+    url:              str
+    path:             str
+    status_code:      int
     request_headers:  dict
     response_headers: dict
-    request_body:     Optional[str]   = None
-    response_body:    Optional[str]   = None
-    api_type:         str             = "REST"    # REST | GraphQL | SOAP
-    gql_operation:    Optional[str]   = None      # query | mutation | subscription
-    gql_query:        Optional[str]   = None      # the actual GraphQL query string
-    error:            Optional[str]   = None
+    request_body:     Optional[str] = None
+    response_body:    Optional[str] = None
+    category:         str           = "REST"   # "GraphQL" | "SOAP" | "REST" | "UI"
+    gql_operation:    Optional[str] = None     # "query" | "mutation" | "subscription"
+    gql_query:        Optional[str] = None     # full GraphQL query string
 
     def to_dict(self) -> dict:
         d = {
@@ -291,73 +300,44 @@ class CapturedRequest:
             d["request_body"]  = self.request_body
         if self.response_body:
             d["response_body"] = self.response_body
-        if self.api_type != "REST":
-            d["api_type"]      = self.api_type
+        if self.category != "REST":
+            d["category"]      = self.category
         if self.gql_operation:
             d["gql_operation"] = self.gql_operation
         if self.gql_query:
             d["gql_query"]     = self.gql_query
-        if self.error:
-            d["error"]         = self.error
         return d
 
 
 @dataclass
 class ReadResult:
-    """
-    Result of reading a .mitm flow file.
-    Produces two separate output files:
-      - endpoints.json  : unique URLs + api_type detection
-      - requests.json   : all requests with full bodies and metadata
-    """
-    source_file:      str
-    target_url:       str
-    api_type:         str               = "REST"
-    requests:         list              = field(default_factory=list)   # list[CapturedRequest]
-    endpoints:        list[str]         = field(default_factory=list)
-    gql_queries:      list[dict]        = field(default_factory=list)
-    total_flows:      int               = 0
-    api_flows:        int               = 0
-    gql_flows:        int               = 0
-    soap_flows:       int               = 0
-
-    @property
-    def summary(self) -> str:
-        lines = [
-            f"Source         : {self.source_file}",
-            f"API type       : {self.api_type}",
-            f"Total flows    : {self.total_flows}",
-            f"API flows      : {self.api_flows}",
-        ]
-        if self.gql_flows:
-            lines.append(f"GraphQL ops    : {self.gql_flows}")
-        if self.soap_flows:
-            lines.append(f"SOAP ops       : {self.soap_flows}")
-        lines.append(f"Unique endpoints: {len(self.endpoints)}")
-        return "\n".join(f"  {l}" for l in lines)
+    """Result of parsing a .mitm flow file."""
+    source_file:   str
+    target_url:    str
+    requests:      list = field(default_factory=list)   # list[CapturedRequest]
+    total_flows:   int  = 0
+    skipped_flows: int  = 0
 
 
 class TrafficReader:
     """
-    Reads and analyzes a mitmproxy .mitm flow file.
+    Reads a mitmproxy .mitm flow file and produces two output files.
 
-    Produces two separate outputs:
-      - endpoints.json  : unique endpoint URLs with api_type detection
-                          (compatible with apisec scan pipeline)
-      - requests.json   : all captured requests with full HTTP details,
-                          bodies, GraphQL queries, SOAP envelopes
+    endpoints.json — unique API endpoint URLs
+                     (compatible with: apisec scan --input endpoints.json)
 
-    GraphQL detection:
-      - Path contains /graphql, /gql, graphiql
-      - Content-Type: application/json + body contains "query" key
-      - Body starts with { or [ and contains __schema, mutation, query keyword
+    requests.json  — all captured requests with full HTTP details,
+                     bodies, GraphQL queries, SOAP envelopes
+
+    Note: API type detection is NOT done here.
+          Run `apisec discovery` after capture for proper detection.
 
     Args:
-        target_url       : base URL of the target API
-        endpoints_path   : output path for endpoints.json (default: endpoints.json)
-        requests_path    : output path for requests.json  (default: requests.json)
-        max_body_size    : max response body size to store in bytes (default: 10KB)
-        filter_target    : if True, only process flows targeting target_url
+        target_url       : base URL of the target (used for filtering)
+        endpoints_path   : output path for endpoints.json
+        requests_path    : output path for requests.json
+        max_body_size    : max body size to store in bytes (default: 8KB)
+        filter_target    : only process flows targeting target_url host
     """
 
     def __init__(
@@ -365,7 +345,7 @@ class TrafficReader:
         target_url:     str,
         endpoints_path: str  = "endpoints.json",
         requests_path:  str  = "requests.json",
-        max_body_size:  int  = 10_240,
+        max_body_size:  int  = 8_192,
         filter_target:  bool = True,
     ) -> None:
         self.target_url     = target_url.rstrip("/")
@@ -383,23 +363,23 @@ class TrafficReader:
 
     def read(self, mitm_file: str) -> ReadResult:
         """
-        Parse a .mitm flow file and produce endpoints.json + requests.json.
+        Parse a .mitm flow file.
 
         Args:
-            mitm_file : path to the .mitm file (e.g. traffic.mitm)
+            mitm_file : path to the .mitm file
 
         Returns:
-            ReadResult with all parsed data.
+            ReadResult containing all parsed requests.
         """
+        result = ReadResult(source_file=mitm_file, target_url=self.target_url)
+
         if not Path(mitm_file).exists():
             logger.error(f"[reader] File not found: {mitm_file}")
-            return ReadResult(source_file=mitm_file, target_url=self.target_url)
+            return result
 
         if Path(mitm_file).stat().st_size == 0:
             logger.error(f"[reader] File is empty: {mitm_file}")
-            return ReadResult(source_file=mitm_file, target_url=self.target_url)
-
-        result = ReadResult(source_file=mitm_file, target_url=self.target_url)
+            return result
 
         try:
             import mitmproxy.io as mitm_io
@@ -407,7 +387,7 @@ class TrafficReader:
             logger.error("[reader] mitmproxy not installed — pip install mitmproxy")
             return result
 
-        logger.info(f"[reader] Reading {mitm_file}...")
+        logger.info(f"[reader] Parsing {mitm_file}...")
 
         try:
             with open(mitm_file, "rb") as f:
@@ -421,16 +401,14 @@ class TrafficReader:
             logger.error(f"[reader] Cannot read {mitm_file}: {e}")
             return result
 
-        # Detect overall API type
-        result.api_type = self._detect_api_type(result)
-
+        api_count = sum(1 for r in result.requests if r.category != "UI")
+        gql_count = sum(1 for r in result.requests if r.category == "GraphQL")
         logger.info(
-            f"[reader] Parsed {result.total_flows} flows — "
-            f"{result.api_flows} API | {result.gql_flows} GraphQL | "
-            f"{len(result.endpoints)} unique endpoints"
+            f"[reader] {result.total_flows} flows — "
+            f"{api_count} API | {gql_count} GraphQL | "
+            f"{result.skipped_flows} skipped"
         )
 
-        # Save outputs
         self._save_endpoints(result)
         self._save_requests(result)
 
@@ -441,96 +419,50 @@ class TrafficReader:
     # =========================================================================
 
     def _process_flow(self, flow, result: ReadResult) -> None:
-        """Parse a single mitmproxy flow into a CapturedRequest."""
-        # Only handle HTTP flows
-        if not hasattr(flow, "request") or not hasattr(flow, "response"):
-            return
-        if flow.response is None:
+        """Parse one mitmproxy flow into a CapturedRequest."""
+        if not hasattr(flow, "request") or flow.response is None:
             return
 
         result.total_flows += 1
-
         req  = flow.request
         resp = flow.response
         host = req.pretty_host.lower()
         path = req.path.split("?")[0]
         url  = req.pretty_url
 
-        # Filter by target host if requested
+        # Filter by target host
         if self.filter_target and self.target_host and self.target_host not in host:
+            result.skipped_flows += 1
             return
 
         # Skip static assets
-        ext = Path(path).suffix.lower()
-        if ext in _STATIC_EXTENSIONS:
+        if Path(path).suffix.lower() in _STATIC_EXTENSIONS:
+            result.skipped_flows += 1
             return
 
-        # Skip non-API content types (only for responses with content-type header)
-        resp_ct = (resp.headers.get("content-type") or "").lower()
-        if resp_ct and not any(ct in resp_ct for ct in ("json", "xml", "graphql", "text/plain")):
-            if resp_ct.startswith(("text/html", "image/", "font/")):
-                return
+        # Parse bodies
+        req_body  = self._read_body(req,  is_request=True)
+        resp_body = self._read_body(resp, is_request=False)
 
-        result.api_flows += 1
-
-        # ── Parse request body ────────────────────────────────────────────────
-        req_body:     Optional[str] = None
-        req_body_raw: Optional[str] = None
-        try:
-            raw = req.get_text(strict=False)
-            if raw and raw.strip():
-                req_body_raw = raw.strip()
-                # Truncate large bodies
-                if len(req_body_raw) > self.max_body_size:
-                    req_body = req_body_raw[:self.max_body_size] + "... [truncated]"
-                else:
-                    req_body = req_body_raw
-        except Exception:
-            pass
-
-        # ── Parse response body ───────────────────────────────────────────────
-        resp_body: Optional[str] = None
-        try:
-            raw_resp = resp.get_text(strict=False)
-            if raw_resp and raw_resp.strip():
-                if len(raw_resp) > self.max_body_size:
-                    resp_body = raw_resp[:self.max_body_size] + "... [truncated]"
-                else:
-                    resp_body = raw_resp
-        except Exception:
-            pass
-
-        # ── Classify request type ─────────────────────────────────────────────
-        api_type, gql_op, gql_query = self._classify_request(
-            path      = path,
-            method    = req.method,
-            req_ct    = (req.headers.get("content-type") or "").lower(),
-            body_raw  = req_body_raw,
+        # Classify
+        category, gql_op, gql_query = self._classify(
+            path    = path,
+            method  = req.method,
+            req_ct  = (req.headers.get("content-type") or "").lower(),
+            body    = req_body,
         )
 
-        # ── Update counters ───────────────────────────────────────────────────
-        if api_type == "GraphQL":
-            result.gql_flows += 1
-            if gql_query and gql_query not in [q.get("query") for q in result.gql_queries]:
-                entry = {"query": gql_query}
-                if gql_op:
-                    entry["operation"] = gql_op
-                result.gql_queries.append(entry)
-        elif api_type == "SOAP":
-            result.soap_flows += 1
+        # Select important headers only
+        req_headers  = self._pick_headers(req.headers,  [
+            "authorization", "cookie", "content-type",
+            "accept", "origin", "referer", "x-csrf-token",
+        ])
+        resp_headers = self._pick_headers(resp.headers, [
+            "content-type", "set-cookie", "x-powered-by",
+            "server", "www-authenticate",
+        ])
 
-        # ── Track unique endpoints ────────────────────────────────────────────
-        parsed    = urlparse(url)
-        clean_url = f"{parsed.scheme}://{parsed.netloc}{path}"
-        if clean_url not in result.endpoints:
-            result.endpoints.append(clean_url)
-
-        # ── Build request headers dict (filtered) ─────────────────────────────
-        req_headers  = self._safe_headers(req.headers,  ["authorization", "cookie", "content-type", "accept", "origin", "referer"])
-        resp_headers = self._safe_headers(resp.headers, ["content-type", "content-length", "set-cookie", "x-powered-by", "server"])
-
-        # ── Create CapturedRequest ────────────────────────────────────────────
-        captured = CapturedRequest(
+        result.requests.append(CapturedRequest(
             index            = result.total_flows,
             method           = req.method,
             url              = url,
@@ -540,87 +472,66 @@ class TrafficReader:
             response_headers = resp_headers,
             request_body     = req_body,
             response_body    = resp_body,
-            api_type         = api_type,
+            category         = category,
             gql_operation    = gql_op,
             gql_query        = gql_query,
-        )
-        result.requests.append(captured)
+        ))
 
     # =========================================================================
-    #  Classification
+    #  Classification — path + content-type + body
     # =========================================================================
 
-    def _classify_request(
+    def _classify(
         self,
-        path:     str,
-        method:   str,
-        req_ct:   str,
-        body_raw: Optional[str],
+        path:   str,
+        method: str,
+        req_ct: str,
+        body:   Optional[str],
     ) -> tuple[str, Optional[str], Optional[str]]:
         """
-        Classify an HTTP request as GraphQL, SOAP, or REST.
+        Classify a request into: GraphQL | SOAP | REST | UI
 
-        Returns:
-            (api_type, gql_operation, gql_query)
-            api_type      : "GraphQL" | "SOAP" | "REST"
-            gql_operation : "query" | "mutation" | "subscription" | None
-            gql_query     : the GraphQL query string | None
+        Returns (category, gql_operation, gql_query)
         """
         path_lower = path.lower()
 
-        # ── SOAP detection ────────────────────────────────────────────────────
-        if any(hint in path_lower for hint in _SOAP_HINTS):
+        # UI / frontend — not API traffic
+        if any(hint in path_lower for hint in _UI_PATH_HINTS):
+            return "UI", None, None
+
+        # SOAP
+        if any(hint in req_ct for hint in _SOAP_CT_HINTS):
             return "SOAP", None, None
-        if "text/xml" in req_ct or "soap" in req_ct:
+        if any(hint in path_lower for hint in _SOAP_PATH_HINTS):
             return "SOAP", None, None
 
-        # ── GraphQL detection ─────────────────────────────────────────────────
-
-        # 1. Path-based detection (strongest signal)
+        # GraphQL — path signal
         path_is_gql = any(hint in path_lower for hint in _GQL_PATH_HINTS)
 
-        # 2. Body-based detection
+        # GraphQL — body signal (POST with JSON body containing "query" key)
         gql_op    = None
         gql_query = None
 
-        if body_raw and "application/json" in req_ct:
-            gql_op, gql_query = self._extract_gql_from_body(body_raw)
+        if body and "application/json" in req_ct:
+            gql_op, gql_query = self._parse_gql_body(body)
 
-        # 3. GET with query param
-        if not gql_query and method == "GET" and "query=" in path:
-            try:
-                from urllib.parse import parse_qs, urlparse as _up
-                qs = parse_qs(_up(path).query)
-                q  = (qs.get("query") or [""])[0]
-                if q and ("{" in q or "mutation" in q.lower()):
-                    gql_query = q
-                    gql_op    = "mutation" if q.strip().lower().startswith("mutation") else "query"
-                    path_is_gql = True
-            except Exception:
-                pass
+        # GraphQL — GET with ?query= param
+        if not gql_query and method == "GET" and "query=" in req.path if hasattr(self, "_current_req") else False:
+            pass  # handled separately if needed
 
         if path_is_gql or gql_query:
             return "GraphQL", gql_op, gql_query
 
         return "REST", None, None
 
-    def _extract_gql_from_body(self, body: str) -> tuple[Optional[str], Optional[str]]:
-        """
-        Extract GraphQL operation type and query string from a JSON body.
-
-        Handles:
-          - Single query: {"query": "...", "variables": {...}}
-          - Batch:        [{"query": "..."}, {"query": "..."}]
-
-        Returns:
-            (operation_type, query_string)
-        """
+    def _parse_gql_body(self, body: str) -> tuple[Optional[str], Optional[str]]:
+        """Extract (operation_type, query_string) from a GraphQL JSON body."""
         try:
             payload = json.loads(body)
         except Exception:
             return None, None
 
-        # Handle batch — take first item
+        # Handle batch — use first item
         if isinstance(payload, list):
             payload = payload[0] if payload else {}
 
@@ -631,75 +542,66 @@ class TrafficReader:
         if not query:
             return None, None
 
-        # Determine operation type
-        q_lower = query.lower().lstrip()
-        if q_lower.startswith("mutation"):
-            op = "mutation"
-        elif q_lower.startswith("subscription"):
-            op = "subscription"
-        elif q_lower.startswith("query") or q_lower.startswith("{"):
-            op = "query"
-        else:
-            return None, None
+        q = query.lower().lstrip()
+        if q.startswith("mutation"):
+            return "mutation", query
+        if q.startswith("subscription"):
+            return "subscription", query
+        if q.startswith(("query", "{")):
+            return "query", query
 
-        return op, query
+        return None, None
 
     # =========================================================================
-    #  API type detection
-    # =========================================================================
-
-    def _detect_api_type(self, result: ReadResult) -> str:
-        """
-        Determine the overall API type from all captured flows.
-
-        Priority: GraphQL > SOAP > REST
-        Decision based on majority of API flows, not just path hints.
-        """
-        total = result.api_flows or 1
-
-        if result.gql_flows / total > 0.3:   # >30% GraphQL flows → GraphQL API
-            return "GraphQL"
-        if result.soap_flows / total > 0.3:   # >30% SOAP flows    → SOAP API
-            return "SOAP"
-        return "REST"
-
-    # =========================================================================
-    #  Output
+    #  Output files
     # =========================================================================
 
     def _save_endpoints(self, result: ReadResult) -> None:
         """
-        Save endpoints.json — URL list + api_type detection.
-        Compatible with: apisec scan --input endpoints.json
+        Save endpoints.json with unique API endpoint URLs.
+        UI requests are excluded. No api_type detection — use apisec discovery.
         """
-        # Sort endpoints: GraphQL first, then alphabetical
-        gql_eps  = [e for e in result.endpoints if any(h in e.lower() for h in _GQL_PATH_HINTS)]
-        rest_eps = [e for e in result.endpoints if e not in gql_eps]
+        seen:      set[str]  = set()
+        endpoints: list[str] = []
 
-        data: dict = {
+        for r in result.requests:
+            if r.category == "UI":
+                continue
+            parsed    = urlparse(r.url)
+            clean_url = f"{parsed.scheme}://{parsed.netloc}{r.path}"
+            if clean_url not in seen:
+                seen.add(clean_url)
+                endpoints.append(clean_url)
+
+        data = {
             "target_url":  self.target_url,
-            "api_type":    result.api_type,
-            "confidence":  1.0,
-            "score":       9 if result.api_type == "GraphQL" else 6,
-            "reasons":     [f"Traffic analysis — {result.gql_flows} GraphQL operations detected"]
-                           if result.api_type == "GraphQL" else
-                           [f"Traffic analysis — {result.api_flows} API requests captured"],
-            "endpoints":   gql_eps + rest_eps,
-            "tech_stack":  [],
+            "api_type":    "Unknown",
+            "confidence":  0.0,
+            "endpoints":   endpoints,
             "source":      "traffic_capture",
+            "note":        "Run apisec discovery --url TARGET to detect API type properly.",
         }
 
-        # Add schema stub for GraphQL with captured queries
-        if result.api_type == "GraphQL" and result.gql_queries:
-            data["schema"] = {
-                "method":           "traffic_capture",
-                "endpoint":         gql_eps[0] if gql_eps else self.target_url + "/graphql",
-                "captured_queries": result.gql_queries,
-                "queries":          [],
-                "mutations":        [],
-                "types":            [],
-                "raw_introspection": None,
-            }
+        # If GraphQL queries were captured, add them as hints
+        gql_queries = [
+            {"query": r.gql_query, "operation": r.gql_operation}
+            for r in result.requests
+            if r.category == "GraphQL" and r.gql_query
+        ]
+        # Deduplicate
+        seen_q: set[str] = set()
+        unique_gql: list[dict] = []
+        for q in gql_queries:
+            if q["query"] not in seen_q:
+                seen_q.add(q["query"])
+                unique_gql.append(q)
+
+        if unique_gql:
+            data["captured_queries"] = unique_gql
+            data["note"] = (
+                f"{len(unique_gql)} unique GraphQL operation(s) captured. "
+                "Run apisec discovery to fetch the full schema."
+            )
 
         try:
             with open(self.endpoints_path, "w", encoding="utf-8") as f:
@@ -710,38 +612,20 @@ class TrafficReader:
 
     def _save_requests(self, result: ReadResult) -> None:
         """
-        Save requests.json — all captured requests with full HTTP details.
-        Separate from endpoints.json to avoid pollution.
-
-        Structure:
-        {
-          "source":      "traffic.mitm",
-          "target_url":  "https://...",
-          "api_type":    "GraphQL",
-          "total":       31,
-          "api_flows":   30,
-          "gql_flows":   25,
-          "summary": {
-            "unique_endpoints": 6,
-            "gql_operations":   25,
-          },
-          "requests": [ CapturedRequest.to_dict(), ... ]
-        }
+        Save requests.json with full HTTP details for all captured requests.
+        Separated from endpoints.json to keep it clean.
         """
+        api_requests = [r for r in result.requests if r.category != "UI"]
+
         data = {
-            "source":     result.source_file,
-            "target_url": self.target_url,
-            "api_type":   result.api_type,
-            "total":      result.total_flows,
-            "api_flows":  result.api_flows,
-            "gql_flows":  result.gql_flows,
-            "soap_flows": result.soap_flows,
-            "summary": {
-                "unique_endpoints": len(result.endpoints),
-                "gql_operations":   result.gql_flows,
-                "gql_unique":       len(result.gql_queries),
-            },
-            "requests": [r.to_dict() for r in result.requests],
+            "source":        result.source_file,
+            "target_url":    self.target_url,
+            "total_flows":   result.total_flows,
+            "api_requests":  len(api_requests),
+            "gql_requests":  sum(1 for r in api_requests if r.category == "GraphQL"),
+            "soap_requests": sum(1 for r in api_requests if r.category == "SOAP"),
+            "rest_requests": sum(1 for r in api_requests if r.category == "REST"),
+            "requests":      [r.to_dict() for r in api_requests],
         }
 
         try:
@@ -752,60 +636,359 @@ class TrafficReader:
             logger.error(f"[reader] Cannot write {self.requests_path}: {e}")
 
     # =========================================================================
+    #  Display — auditor-friendly summary
+    # =========================================================================
+
+    def print_summary(self, result: ReadResult) -> None:
+        """
+        Print a clean, auditor-friendly summary of the captured traffic.
+
+        Format:
+          - Header with stats
+          - GraphQL Operations section (grouped by operation name + type)
+          - REST/SOAP Endpoints section (grouped by path)
+          - Output files
+          - Next steps
+        """
+        RESET  = "\033[0m"
+        BOLD   = "\033[1m"
+        BLUE   = "\033[94m"
+        GREEN  = "\033[92m"
+        YELLOW = "\033[93m"
+        RED    = "\033[91m"
+        GRAY   = "\033[90m"
+        CYAN   = "\033[96m"
+
+        # Sensitive keyword hints for mutations
+        SENSITIVE_HINTS = (
+            "login", "auth", "password", "token", "delete",
+            "admin", "email", "reset", "register", "signup",
+        )
+
+        api_reqs  = [r for r in result.requests if r.category != "UI"]
+        gql_reqs  = [r for r in result.requests if r.category == "GraphQL"]
+        rest_reqs = [r for r in result.requests if r.category == "REST"]
+        soap_reqs = [r for r in result.requests if r.category == "SOAP"]
+
+        fname     = Path(result.source_file).name
+        bar       = "═" * 66
+
+        print(f"""
+{BLUE}╔{bar}╗
+║{'':^66}║
+║{'APISec  ·  Traffic Analyzer':^66}║
+║{'':^66}║
+║  {CYAN}Source{RESET}{BLUE}  :  {RESET}{fname:<57}{BLUE}║
+║  {CYAN}Target{RESET}{BLUE}  :  {RESET}{result.target_url[:57]:<57}{BLUE}║
+║{'':^66}║
+╠{bar}╣
+║{'':^66}║
+║  {CYAN}Total flows   {RESET}{BLUE}:{RESET}  {BOLD}{result.total_flows:<6}{RESET}   {GRAY}({result.skipped_flows} filtered — UI/assets){RESET:<18}{BLUE}║
+║  {CYAN}API requests  {RESET}{BLUE}:{RESET}  {BOLD}{len(api_reqs):<6}{RESET}{BLUE}{'':>33}║
+║  {CYAN}GraphQL ops   {RESET}{BLUE}:{RESET}  {BOLD}{GREEN}{len(gql_reqs):<6}{RESET}{BLUE}{'':>33}║
+║{'':^66}║
+╚{bar}╝{RESET}
+""")
+
+        # ── GraphQL Operations ────────────────────────────────────────────────
+        if gql_reqs:
+            print(f"  {BOLD}{BLUE}{'─'*64}{RESET}")
+            print(f"  {BOLD}{BLUE}GRAPHQL OPERATIONS ({len(gql_reqs)}){RESET}")
+            print(f"  {BOLD}{BLUE}{'─'*64}{RESET}\n")
+
+            # Group by (operation_name, operation_type)
+            from collections import defaultdict
+            gql_groups: dict = defaultdict(list)
+
+            for r in gql_reqs:
+                # Extract operation name from query
+                op_name = self._extract_gql_op_name(r.gql_query or "")
+                key     = (r.gql_operation or "query", op_name)
+                gql_groups[key].append(r.index)
+
+            for (op_type, op_name), indices in sorted(gql_groups.items(), key=lambda x: x[0][0]):
+                count     = len(indices)
+                idx_str   = ", ".join(f"#{i}" for i in indices[:5])
+                if len(indices) > 5:
+                    idx_str += f" (+{len(indices)-5} more)"
+
+                # Color by operation type
+                if op_type == "mutation":
+                    type_color = RED
+                elif op_type == "subscription":
+                    type_color = CYAN
+                else:
+                    type_color = GREEN
+
+                type_badge = f"[{type_color}{op_type:<12}{RESET}]"
+
+                # Flag sensitive operations
+                is_sensitive = any(h in op_name.lower() for h in SENSITIVE_HINTS)
+                flag = f"  {YELLOW}⚠ sensitive{RESET}" if is_sensitive else ""
+
+                print(
+                    f"  {type_badge}  {BOLD}{op_name:<30}{RESET}  "
+                    f"{GRAY}{idx_str:<30}{RESET}  "
+                    f"{GRAY}({count}x){RESET}{flag}"
+                )
+
+            print()
+
+        # ── REST Endpoints ────────────────────────────────────────────────────
+        if rest_reqs:
+            print(f"  {BOLD}{'─'*64}{RESET}")
+            print(f"  {BOLD}REST / OTHER ENDPOINTS ({len(rest_reqs)}){RESET}")
+            print(f"  {BOLD}{'─'*64}{RESET}\n")
+
+            # Group by (method, path)
+            from collections import defaultdict
+            rest_groups: dict = defaultdict(list)
+            for r in rest_reqs:
+                rest_groups[(r.method, r.path)].append((r.index, r.status_code))
+
+            for (method, path), entries in sorted(rest_groups.items(), key=lambda x: x[0][1]):
+                count   = len(entries)
+                idx_str = ", ".join(f"#{i}" for i, _ in entries[:4])
+                if count > 4:
+                    idx_str += f" (+{count-4} more)"
+                statuses = list({s for _, s in entries})
+                status_str = ", ".join(str(s) for s in sorted(statuses))
+
+                # Color method
+                m_color = GREEN if method == "GET" else YELLOW if method == "POST" else CYAN
+                print(
+                    f"  {m_color}{method:<7}{RESET}  {path:<40}  "
+                    f"{GRAY}{idx_str:<25}  ({count}x)  [{status_str}]{RESET}"
+                )
+
+            print()
+
+        # ── SOAP ──────────────────────────────────────────────────────────────
+        if soap_reqs:
+            print(f"  {BOLD}{'─'*64}{RESET}")
+            print(f"  {BOLD}SOAP OPERATIONS ({len(soap_reqs)}){RESET}")
+            print(f"  {BOLD}{'─'*64}{RESET}\n")
+            for r in soap_reqs:
+                print(f"  {YELLOW}[SOAP]{RESET}  {r.method}  {r.path}  → {r.status_code}")
+            print()
+
+        # ── Output files + next steps ─────────────────────────────────────────
+        print(f"  {BOLD}{YELLOW}{'─'*64}{RESET}")
+        print(f"  {BOLD}Output files{RESET}")
+        print(f"  {BOLD}{YELLOW}{'─'*64}{RESET}\n")
+        print(f"  {GREEN}endpoints.json{RESET}  →  {self.endpoints_path}")
+        print(f"  {GREEN}requests.json{RESET}   →  {self.requests_path}\n")
+
+        print(f"  {BOLD}{YELLOW}Next steps:{RESET}")
+        print(f"  {YELLOW}1.{RESET} Run discovery to detect API type and fetch schema:")
+        print(f"     {GRAY}apisec discovery --url {self.target_url} --wordlist wordlists/api-endpoints.txt{RESET}")
+        print(f"  {YELLOW}2.{RESET} Or scan directly if you know the API type:")
+        print(f"     {GRAY}apisec scan --input {self.endpoints_path} --tests all{RESET}")
+        print(f"\n  {BLUE}{'═'*64}{RESET}\n")
+
+    # =========================================================================
     #  Helpers
     # =========================================================================
 
-    def _safe_headers(self, headers, keys: list[str]) -> dict:
-        """Extract specific headers, lowercasing keys."""
+    def _read_body(self, msg, is_request: bool) -> Optional[str]:
+        """Read and truncate a request/response body."""
+        try:
+            raw = msg.get_text(strict=False)
+            if not raw or not raw.strip():
+                return None
+            raw = raw.strip()
+            if len(raw) > self.max_body_size:
+                return raw[:self.max_body_size] + " ...[truncated]"
+            return raw
+        except Exception:
+            return None
+
+    def _pick_headers(self, headers, keys: list[str]) -> dict:
+        """Extract specific headers from a mitmproxy headers object."""
         result = {}
         for k in keys:
-            val = headers.get(k) or headers.get(k.title()) or headers.get(k.upper())
+            val = (
+                headers.get(k)
+                or headers.get(k.title())
+                or headers.get(k.upper())
+            )
             if val:
                 result[k] = val
         return result
 
-    def print_summary(self, result: ReadResult) -> None:
-        """Display a formatted summary of the read operation."""
+    def _extract_gql_op_name(self, query: str) -> str:
+        """
+        Extract the operation name from a GraphQL query string.
+
+        Examples:
+          "query getBlogPost($id: Int!) { ... }" → "getBlogPost"
+          "{ getAllBlogPosts { ... } }"           → "getAllBlogPosts"
+          "mutation login($input: LoginInput!) {" → "login"
+        """
+        if not query:
+            return "anonymous"
+
+        q = query.strip()
+
+        # Named operation: query/mutation NAME(...) { or query/mutation NAME {
+        import re
+        m = re.match(
+            r"(?:query|mutation|subscription)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[({]",
+            q, re.IGNORECASE
+        )
+        if m:
+            return m.group(1)
+
+        # Anonymous shorthand: { fieldName(...) { } }
+        # or mutation { fieldName(...) { } }
+        m = re.match(r"(?:query|mutation|subscription)?\s*\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[({]", q, re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+        # First word after operation keyword
+        tokens = q.split()
+        if len(tokens) >= 2 and tokens[0].lower() in ("query", "mutation", "subscription"):
+            name = tokens[1].split("(")[0].split("{")[0].strip()
+            if name:
+                return name
+
+        return "anonymous"
+
+
+
+    def print_full_requests(self, result: ReadResult) -> None:
+        """
+        Print complete HTTP request/response details for every captured flow.
+
+        Displays:
+          - Request line (method + path + status)
+          - Operation type badge for GraphQL
+          - Request headers (filtered — auth, cookies, content-type)
+          - Request body (full, pretty-printed JSON when possible)
+          - Response body (full, pretty-printed JSON when possible)
+
+        Skips UI/static flows.
+        Called when --full-requests flag is set.
+        """
         RESET  = "\033[0m"
+        BOLD   = "\033[1m"
         BLUE   = "\033[94m"
         GREEN  = "\033[92m"
         YELLOW = "\033[93m"
-        BOLD   = "\033[1m"
+        RED    = "\033[91m"
+        GRAY   = "\033[90m"
+        CYAN   = "\033[96m"
+        DIM    = "\033[2m"
 
-        print(f"""
-  {BLUE}╔══════════════════════════════════════════════════════╗
-  ║           APISec — Traffic Reader                    ║
-  ╚══════════════════════════════════════════════════════╝{RESET}
+        api_reqs = [r for r in result.requests if r.category != "UI"]
 
-{result.summary}
+        if not api_reqs:
+            print(f"  {GRAY}No API requests to display.{RESET}")
+            return
 
-  {BOLD}Requests breakdown:{RESET}""")
+        bar   = "─" * 66
+        dbar  = "═" * 66
 
-        # Show first 20 requests
-        shown = 0
-        for r in result.requests[:20]:
-            if r.api_type == "GraphQL":
-                op    = f"  {BLUE}[GQL:{r.gql_operation or 'query'}]{RESET}"
-                query = f" {r.gql_query[:60]}..." if r.gql_query and len(r.gql_query) > 60 else f" {r.gql_query or ''}"
-                print(f"  {GREEN}#{r.index:<3}{RESET} {r.method:<7} {r.path:<35} → {r.status_code}{op}{query}")
-            elif r.api_type == "SOAP":
-                print(f"  {GREEN}#{r.index:<3}{RESET} {r.method:<7} {r.path:<35} → {r.status_code}  {YELLOW}[SOAP]{RESET}")
-            else:
-                print(f"  {GREEN}#{r.index:<3}{RESET} {r.method:<7} {r.path:<35} → {r.status_code}")
-            shown += 1
+        print(f"\n  {BOLD}{YELLOW}{dbar}{RESET}")
+        print(f"  {BOLD}{YELLOW}FULL REQUEST DETAILS  ({len(api_reqs)} requests){RESET}")
+        print(f"  {BOLD}{YELLOW}{dbar}{RESET}")
 
-        if len(result.requests) > 20:
-            print(f"  ... +{len(result.requests) - 20} more requests in {self.requests_path}")
+        for r in api_reqs:
+            print(f"\n  {BOLD}{BLUE}{bar}{RESET}")
 
-        print(f"""
-  {YELLOW}[→] Output files:{RESET}
-      endpoints.json : {self.endpoints_path}
-      requests.json  : {self.requests_path}
+            # ── Request line ──────────────────────────────────────────────────
+            method_color = (
+                RED    if r.method in ("DELETE", "PATCH") else
+                YELLOW if r.method == "POST" else
+                GREEN
+            )
+            status_color = (
+                GREEN  if 200 <= r.status_code < 300 else
+                YELLOW if 300 <= r.status_code < 400 else
+                RED
+            )
 
-  {YELLOW}[→] Next steps:{RESET}
-      apisec scan --input {self.endpoints_path} --tests all
-  {BLUE}══════════════════════════════════════════════════════{RESET}
-""")
+            print(
+                f"  {BOLD}#{r.index:<4}{RESET} "
+                f"{method_color}{r.method:<7}{RESET} "
+                f"{r.path:<45} "
+                f"→ {status_color}{r.status_code}{RESET}"
+            )
+
+            # ── GraphQL operation badge ───────────────────────────────────────
+            if r.category == "GraphQL":
+                op_color = RED if r.gql_operation == "mutation" else GREEN
+                op_name  = self._extract_gql_op_name(r.gql_query or "")
+                print(
+                    f"  {CYAN}[GraphQL]{RESET}  "
+                    f"{op_color}{r.gql_operation or 'query'}{RESET}  "
+                    f"{BOLD}{op_name}{RESET}"
+                )
+            elif r.category == "SOAP":
+                print(f"  {YELLOW}[SOAP]{RESET}")
+
+            # ── Request headers ───────────────────────────────────────────────
+            if r.request_headers:
+                print(f"\n  {BOLD}Request Headers:{RESET}")
+                for k, v in r.request_headers.items():
+                    # Truncate cookies and tokens for readability
+                    if k.lower() in ("cookie", "authorization") and len(v) > 80:
+                        v = v[:77] + "..."
+                    print(f"  {GRAY}  {k:<20} : {v}{RESET}")
+
+            # ── Request body ──────────────────────────────────────────────────
+            if r.request_body:
+                print(f"\n  {BOLD}Request Body:{RESET}")
+                pretty = self._pretty_print(r.request_body)
+                for line in pretty.split("\n"):
+                    print(f"  {CYAN}  {line}{RESET}")
+
+            # ── Response headers ──────────────────────────────────────────────
+            if r.response_headers:
+                print(f"\n  {BOLD}Response Headers:{RESET}")
+                for k, v in r.response_headers.items():
+                    if k.lower() == "set-cookie" and len(v) > 80:
+                        v = v[:77] + "..."
+                    print(f"  {GRAY}  {k:<20} : {v}{RESET}")
+
+            # ── Response body ─────────────────────────────────────────────────
+            if r.response_body:
+                print(f"\n  {BOLD}Response Body:{RESET}")
+                pretty = self._pretty_print(r.response_body)
+                for line in pretty.split("\n"):
+                    print(f"  {DIM}  {line}{RESET}")
+
+        print(f"\n  {BOLD}{YELLOW}{dbar}{RESET}\n")
+
+    # -------------------------------------------------------------------------
+
+    def _pretty_print(self, body: str) -> str:
+        """
+        Pretty-print a body string.
+        - JSON → indented with json.dumps
+        - XML/SOAP → return as-is (no dependency on lxml)
+        - Other → return as-is
+        """
+        stripped = body.strip()
+
+        # JSON
+        if stripped.startswith(("{", "[")):
+            try:
+                parsed = json.loads(stripped)
+                return json.dumps(parsed, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        # XML / SOAP — basic indent via textwrap
+        if stripped.startswith("<"):
+            try:
+                import xml.dom.minidom as minidom
+                dom = minidom.parseString(stripped.encode("utf-8"))
+                return dom.toprettyxml(indent="  ").split("\n", 1)[-1]  # skip XML declaration
+            except Exception:
+                pass
+
+        return stripped
 
 # =============================================================================
 #  TrafficCapture
