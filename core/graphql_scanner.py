@@ -3,34 +3,37 @@
 GraphQLScanner — Automated GraphQL vulnerability detection.
 
 Architecture:
-  - Vulnerability metadata (description, OWASP, CWE, solution) lives in
-    data/graphql_vulns.json — editable without touching this file.
+  - Vulnerability metadata lives in data/graphql_vulns.json — never hardcoded.
   - This file contains only detection logic.
-  - _vuln() is the single factory that builds ScanResult objects from
-    the knowledge base, ensuring all 14 fields are always populated.
+  - _vuln() is the single ScanResult factory — all 14 fields always populated.
+  - SchemaState tracks introspection availability across all tests.
 
-Tests implemented:
-  GQL-S1  introspection  — Introspection exposed
-  GQL-S3  fields         — Sensitive field exposure
-  GQL-S4  auth           — Broken auth on mutations
-  GQL-S5  idor           — IDOR via queries
-  GQL-S9  batch          — Batch query attack
-  GQL-S10 alias          — Alias attack / rate-limit bypass
-  GQL-S11 depth          — Depth attack (DoS)
+Schema availability matrix:
+  ┌──────────────────────┬─────────────────────────────────────────────┐
+  │ Test                 │ Behavior when schema unavailable            │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ GQL-S1 introspection │ Probes live — logs if blocked               │
+  │ GQL-S2 bypass        │ Only runs when S1 is blocked                │
+  │ GQL-S3 fields        │ Skipped with INFO log — needs schema        │
+  │ GQL-S4 auth          │ Falls back to hardcoded mutation names      │
+  │ GQL-S5 idor          │ Falls back to hardcoded query names         │
+  │ GQL-S6 csrf          │ Always runs — schema-independent            │
+  │ GQL-S9 batch         │ Always runs — schema-independent            │
+  │ GQL-S10 alias        │ Always runs — schema-independent            │
+  │ GQL-S11 depth        │ Always runs — schema-independent            │
+  │ GQL-S13 error        │ Always runs — schema-independent            │
+  └──────────────────────┴─────────────────────────────────────────────┘
 
-Tests planned (data/graphql_vulns.json already contains their metadata):
-  GQL-S2  bypass         — Introspection bypass
-  GQL-S6  csrf           — CSRF via GET / text-plain
-  GQL-S7  sqli           — SQL injection in arguments
-  GQL-S8  nosqli         — NoSQL injection in arguments
-  GQL-S12 subscription   — Subscription abuse
-  GQL-S13 error          — Error disclosure
+Tests implemented  : GQL-S1 S2 S3 S4 S5 S6 S9 S10 S11 S13  (10/13)
+Tests planned      : GQL-S7 (sqli) S8 (nosqli) S12 (subscription)
 """
 
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Optional
 
 from core.models    import ScanResult
@@ -49,13 +52,44 @@ _VULNS_FILE = os.path.join(
 
 
 # -----------------------------------------------------------------------------
-#  GraphQL constants
+#  Constants
 # -----------------------------------------------------------------------------
 
 GRAPHQL_ENDPOINTS: list[str] = [
     "/graphql", "/api/graphql", "/graphql/v1",
     "/v1/graphql", "/query", "/gql",
 ]
+
+INTROSPECTION_PROBE = "{ __schema { queryType { name } } }"
+
+INTROSPECTION_QUERY = """
+{
+  __schema {
+    queryType        { name }
+    mutationType     { name }
+    subscriptionType { name }
+    types {
+      name
+      kind
+      fields(includeDeprecated: true) {
+        name
+        args { name }
+        type { kind name ofType { kind name ofType { kind name } } }
+      }
+    }
+  }
+}
+"""
+
+# GQL-S2 bypass probes
+BYPASS_NEWLINE_PROBE  = "{ __schema\n{ queryType { name } } }"
+BYPASS_FRAGMENT_PROBE = (
+    "query { ...F } "
+    "fragment F on Query { __schema { queryType { name } } }"
+)
+
+# GQL-S6 safe probe — read-only, no side effects
+CSRF_SAFE_PROBE = "{ __typename }"
 
 SENSITIVE_FIELDS: list[str] = [
     "password", "passwd", "secret", "token", "apikey", "api_key",
@@ -70,29 +104,39 @@ DANGEROUS_MUTATIONS: list[str] = [
     "changePassword", "transferOwnership", "deleteOrganization",
 ]
 
-INTROSPECTION_PROBE = "{ __schema { queryType { name } } }"
-
-INTROSPECTION_QUERY = """
-{
-  __schema {
-    queryType    { name }
-    mutationType { name }
-    types {
-      name
-      kind
-      fields(includeDeprecated: true) {
-        name
-        type { kind name ofType { kind name } }
-      }
-    }
-  }
-}
-"""
+ERROR_LEAK_SIGNALS: list[tuple[str, str]] = [
+    ("Traceback",                     "Python stack trace"),
+    ("traceback",                     "Python stack trace"),
+    ("at Object.",                    "JavaScript stack trace"),
+    ("at Function.",                  "JavaScript stack trace"),
+    ("NullPointerException",          "Java stack trace"),
+    ("System.Exception",              ".NET stack trace"),
+    ("/home/",                        "Unix file path"),
+    ("/var/",                         "Unix file path"),
+    ("/usr/",                         "Unix file path"),
+    ("C:\\",                          "Windows file path"),
+    ("site-packages",                 "Python package path"),
+    ("node_modules",                  "Node.js module path"),
+    ("syntax error at",               "SQL syntax error"),
+    ("ERROR:  syntax",                "PostgreSQL error"),
+    ("You have an error in your SQL", "MySQL error"),
+    ("ORA-",                          "Oracle error"),
+    ("Microsoft SQL Server",          "MSSQL version"),
+    ("Django",                        "Django framework"),
+    ("Flask",                         "Flask framework"),
+    ("graphene",                      "Graphene Python"),
+    ("strawberry",                    "Strawberry Python"),
+]
 
 DEPTH_BLOCKED_SIGNALS: list[str] = [
     "max depth", "maxdepth", "query depth", "too deep",
     "complexity", "limit exceeded", "query too complex",
     "depth limit", "max complexity",
+]
+
+BATCH_BLOCKED_SIGNALS: list[str] = [
+    "batch", "too many", "limit", "forbidden",
+    "not allowed", "disabled", "batching not supported",
 ]
 
 AUTH_ERROR_SIGNALS: list[str] = [
@@ -101,10 +145,89 @@ AUTH_ERROR_SIGNALS: list[str] = [
     "authentication required", "login required", "invalid token",
 ]
 
-BATCH_BLOCKED_SIGNALS: list[str] = [
-    "batch", "too many", "limit", "forbidden",
-    "not allowed", "disabled", "batching not supported",
+FIELD_MISSING_SIGNALS: list[str] = [
+    "cannot query field", "unknown field",
+    "did you mean", "field does not exist", "no field named",
 ]
+
+
+# -----------------------------------------------------------------------------
+#  SchemaState
+# -----------------------------------------------------------------------------
+
+class SchemaStatus(Enum):
+    AVAILABLE_FROM_DISCOVERY = auto()
+    AVAILABLE_FROM_SCAN      = auto()
+    AVAILABLE_FROM_BYPASS    = auto()
+    BLOCKED                  = auto()
+    UNKNOWN                  = auto()
+
+
+@dataclass
+class SchemaState:
+    """
+    Tracks schema availability across all test methods in a scan session.
+
+    All tests read and write this shared object to avoid redundant
+    introspection requests and to log accurate context messages.
+    """
+    status:     SchemaStatus = SchemaStatus.UNKNOWN
+    raw:        Optional[dict] = None   # raw introspection JSON response
+    gql_schema: Optional[dict] = None  # parsed schema from discovery
+
+    @property
+    def available(self) -> bool:
+        return self.raw is not None
+
+    @property
+    def source_label(self) -> str:
+        return {
+            SchemaStatus.AVAILABLE_FROM_DISCOVERY: "discovery",
+            SchemaStatus.AVAILABLE_FROM_SCAN:      "live scan",
+            SchemaStatus.AVAILABLE_FROM_BYPASS:    "bypass (GQL-S2)",
+            SchemaStatus.BLOCKED:                  "blocked",
+            SchemaStatus.UNKNOWN:                  "unknown",
+        }.get(self.status, "?")
+
+    def get_types(self) -> list[dict]:
+        if not self.raw:
+            return []
+        return (
+            self.raw.get("data", {})
+                    .get("__schema", {})
+                    .get("types", [])
+        )
+
+    def get_mutation_names(self) -> list[str]:
+        if not self.raw:
+            return []
+        schema   = self.raw.get("data", {}).get("__schema", {})
+        mut_type = (schema.get("mutationType") or {}).get("name", "")
+        if not mut_type:
+            return []
+        for t in schema.get("types", []):
+            if t.get("name") == mut_type:
+                return [f.get("name", "") for f in (t.get("fields") or [])]
+        return []
+
+    def get_query_fields(self) -> list[dict]:
+        """Return query field definitions with their argument names."""
+        if self.gql_schema:
+            return self.gql_schema.get("queries", [])
+        if not self.raw:
+            return []
+        schema     = self.raw.get("data", {}).get("__schema", {})
+        query_type = (schema.get("queryType") or {}).get("name", "Query")
+        for t in schema.get("types", []):
+            if t.get("name") == query_type:
+                return [
+                    {
+                        "name": f.get("name", ""),
+                        "args": [a.get("name", "") for a in (f.get("args") or [])],
+                    }
+                    for f in (t.get("fields") or [])
+                ]
+        return []
 
 
 # -----------------------------------------------------------------------------
@@ -112,10 +235,7 @@ BATCH_BLOCKED_SIGNALS: list[str] = [
 # -----------------------------------------------------------------------------
 
 class _VulnDB:
-    """
-    Loads data/graphql_vulns.json once and exposes per-vulnerability metadata.
-    Singleton — the file is read only on first access.
-    """
+    """Singleton — loads data/graphql_vulns.json once."""
     _instance: Optional["_VulnDB"] = None
     _db: dict = {}
 
@@ -129,9 +249,14 @@ class _VulnDB:
         try:
             with open(_VULNS_FILE, "r", encoding="utf-8") as f:
                 self._db = json.load(f)
-            logger.debug(f"[vulndb] Loaded {_VULNS_FILE} — {len(self._db) - 1} entries")
+            logger.debug(
+                f"[vulndb] graphql — {len(self._db) - 1} entries loaded"
+            )
         except FileNotFoundError:
-            logger.warning(f"[vulndb] {_VULNS_FILE} not found — metadata fields will be empty.")
+            logger.warning(
+                f"[vulndb] {_VULNS_FILE} not found — "
+                "ScanResults will have empty metadata fields."
+            )
             self._db = {}
         except json.JSONDecodeError as e:
             logger.error(f"[vulndb] Malformed {_VULNS_FILE}: {e}")
@@ -141,7 +266,7 @@ class _VulnDB:
         return self._db.get(name, {})
 
     @property
-    def all_tests(self) -> list[dict]:
+    def all_tests(self) -> list[tuple[str, dict]]:
         return [(k, v) for k, v in self._db.items() if not k.startswith("_")]
 
 
@@ -153,29 +278,26 @@ _vulndb = _VulnDB()
 # -----------------------------------------------------------------------------
 
 def _vuln(
-    name:      str,
-    endpoint:  str,
-    method:    str,
-    evidence:  str,
-    payload:   Optional[str] = None,
-    parameter: Optional[str] = None,
-    extra:     Optional[str] = None,
+    name:       str,
+    endpoint:   str,
+    method:     str,
+    evidence:   str,
+    payload:    Optional[str] = None,
+    parameter:  Optional[str] = None,
+    extra_desc: Optional[str] = None,
 ) -> ScanResult:
     """
     Build a fully-populated ScanResult from the knowledge base.
-
-    Runtime context (endpoint, evidence, payload) comes from the caller.
-    All static metadata (description, solution, OWASP, CWE, severity,
-    reference) comes from data/graphql_vulns.json.
+    Runtime context comes from the caller.
+    All static metadata comes from data/graphql_vulns.json.
     """
-    meta = _vulndb.get(name)
-
-    description = meta.get("description", f"Vulnerability: {name}")
-    if extra:
-        description = f"{description} {extra}"
+    meta        = _vulndb.get(name)
+    description = meta.get("description", f"Vulnerability detected: {name}")
+    if extra_desc:
+        description = f"{description} {extra_desc}"
 
     return ScanResult(
-        vuln_id     = meta.get("id",          f"GQL-{name.upper()[:3]}"),
+        vuln_id     = meta.get("id",          f"GQL-{name.upper()[:4]}"),
         vuln_type   = meta.get("label",        name),
         severity    = meta.get("severity",     "MEDIUM"),
         confidence  = meta.get("confidence",   "MEDIUM"),
@@ -187,8 +309,14 @@ def _vuln(
         payload     = payload,
         evidence    = evidence,
         description = description,
-        solution    = meta.get("solution",  "See OWASP GraphQL Security Cheat Sheet."),
-        reference   = meta.get("reference", "https://cheatsheetseries.owasp.org/cheatsheets/GraphQL_Cheat_Sheet.html"),
+        solution    = meta.get(
+            "solution",
+            "See OWASP GraphQL Security Cheat Sheet."
+        ),
+        reference   = meta.get(
+            "reference",
+            "https://cheatsheetseries.owasp.org/cheatsheets/GraphQL_Cheat_Sheet.html"
+        ),
     )
 
 
@@ -200,25 +328,25 @@ class GraphQLScanner:
     """
     Tests GraphQL endpoints for security vulnerabilities.
 
-    Schema data pre-fetched during discovery is injected via the constructor
-    to avoid redundant introspection requests during the scan phase.
-
     Usage:
         scanner = GraphQLScanner(
             base_url = "https://api.example.com",
             schema   = discovery_result["schema"],
         )
-        results = scanner.scan(endpoints, tests=["introspection", "auth", "idor"])
+        results = scanner.scan(endpoints, tests=["introspection", "auth"])
     """
 
     _TEST_REGISTRY: dict[str, str] = {
         "introspection": "_test_introspection",
+        "bypass":        "_test_introspection_bypass",
         "fields":        "_test_field_exposure",
         "auth":          "_test_broken_auth",
+        "idor":          "_test_idor",
+        "csrf":          "_test_csrf",
         "batch":         "_test_batch_attack",
         "alias":         "_test_alias_attack",
         "depth":         "_test_depth_attack",
-        "idor":          "_test_idor",
+        "error":         "_test_error_disclosure",
     }
 
     def __init__(
@@ -228,10 +356,20 @@ class GraphQLScanner:
         token:    Optional[str]  = None,
         schema:   Optional[dict] = None,
     ) -> None:
-        self.base_url    = base_url.rstrip("/")
-        self.http        = Requester(self.base_url, timeout=timeout)
-        self._schema     = schema.get("raw_introspection") if isinstance(schema, dict) else None
-        self._gql_schema = schema
+        self.base_url     = base_url.rstrip("/")
+        self.http         = Requester(self.base_url, timeout=timeout)
+        self._schema_state = SchemaState()
+
+        if isinstance(schema, dict):
+            raw = schema.get("raw_introspection")
+            if raw and isinstance(raw, dict) and "data" in raw:
+                self._schema_state.raw        = raw
+                self._schema_state.gql_schema = schema
+                self._schema_state.status     = SchemaStatus.AVAILABLE_FROM_DISCOVERY
+                logger.debug(
+                    f"[scanner] Schema from discovery — "
+                    f"{len(self._schema_state.get_types())} types"
+                )
 
         if token:
             self.http.set_token(token)
@@ -247,7 +385,7 @@ class GraphQLScanner:
     ) -> list[ScanResult]:
         """
         Run vulnerability tests against GraphQL endpoints.
-        Unknown test names (REST tests passed by main.py) are silently ignored.
+        Unknown test names (REST names) are silently ignored.
         """
         active: dict[str, callable] = {}
         if tests is None:
@@ -258,7 +396,7 @@ class GraphQLScanner:
                     active[name] = getattr(self, self._TEST_REGISTRY[name])
 
         if not active:
-            logger.info("[GraphQL] No applicable tests for this API type.")
+            logger.info("[GraphQL] No applicable tests — skipped.")
             return []
 
         gql_endpoints = self._resolve_endpoints(endpoints)
@@ -267,7 +405,8 @@ class GraphQLScanner:
             return []
 
         logger.info(
-            f"[*] GraphQL scan — {len(gql_endpoints)} endpoint(s) — "
+            f"[*] GraphQL scan — {len(gql_endpoints)} endpoint(s) | "
+            f"schema: {self._schema_state.source_label} | "
             f"tests: {list(active.keys())}"
         )
 
@@ -287,40 +426,60 @@ class GraphQLScanner:
     # =========================================================================
 
     def _test_introspection(self, endpoint: str) -> list[ScanResult]:
+        """
+        Confirm introspection is active in production.
+
+        Fast path  : uses pre-fetched schema from discovery.
+        Slow path  : probes the endpoint and caches the result.
+        Side effect: updates SchemaState for all subsequent tests.
+        """
         path = self._to_path(endpoint)
 
-        if self._schema:
-            types_count = len(
-                self._schema.get("data", {}).get("__schema", {}).get("types", [])
-            )
-            logger.info(f"    [VULN] GQL-S1 Introspection exposed -> {endpoint}")
+        # Fast path — schema already available from discovery
+        if self._schema_state.status == SchemaStatus.AVAILABLE_FROM_DISCOVERY:
+            types_count = len(self._schema_state.get_types())
+            logger.info(f"    [VULN] GQL-S1 Introspection exposed → {endpoint}")
             return [_vuln(
                 name     = "introspection",
                 endpoint = endpoint,
                 method   = "POST",
                 payload  = INTROSPECTION_PROBE,
-                evidence = f"Introspection active — {types_count} types exposed (schema from discovery)",
+                evidence = (
+                    f"Introspection active — {types_count} types exposed "
+                    f"(schema pre-fetched during discovery)"
+                ),
             )]
 
-        r_probe = self._gql_post(path, INTROSPECTION_PROBE)
-        if not self._is_gql_response(r_probe):
+        # Slow path — probe the endpoint
+        r = self._gql_post(path, INTROSPECTION_PROBE)
+
+        if not self._is_gql_response(r):
+            logger.info(
+                f"    [INFO] GQL-S1 — endpoint not reachable or not GraphQL: {endpoint}"
+            )
             return []
 
-        body = self._parse_gql(r_probe)
-        if not body or "__schema" not in str(body):
+        body = self._parse_gql(r)
+
+        if not body.get("data", {}).get("__schema"):
+            # Introspection is disabled
+            self._schema_state.status = SchemaStatus.BLOCKED
+            logger.info(
+                f"    [INFO] GQL-S1 — introspection disabled on {endpoint}. "
+                "GQL-S2 bypass will be attempted next."
+            )
             return []
 
+        # Introspection confirmed — fetch full schema and cache
         r_full = self._gql_post(path, INTROSPECTION_QUERY)
         if self._is_gql_response(r_full):
             full = self._parse_gql(r_full)
-            if full:
-                self._schema = full
+            if full and full.get("data", {}).get("__schema"):
+                self._schema_state.raw    = full
+                self._schema_state.status = SchemaStatus.AVAILABLE_FROM_SCAN
 
-        types_count = len(
-            (self._schema or {}).get("data", {}).get("__schema", {}).get("types", [])
-        )
-
-        logger.info(f"    [VULN] GQL-S1 Introspection exposed -> {endpoint}")
+        types_count = len(self._schema_state.get_types())
+        logger.info(f"    [VULN] GQL-S1 Introspection exposed → {endpoint}")
         return [_vuln(
             name     = "introspection",
             endpoint = endpoint,
@@ -330,35 +489,131 @@ class GraphQLScanner:
         )]
 
     # =========================================================================
+    #  GQL-S2 — Introspection bypass
+    # =========================================================================
+
+    def _test_introspection_bypass(self, endpoint: str) -> list[ScanResult]:
+        """
+        Attempt to retrieve the schema when standard introspection is blocked.
+
+        Only runs when SchemaStatus is BLOCKED (S1 confirmed introspection off).
+        If S1 succeeded, bypass is irrelevant and is skipped immediately.
+
+        Techniques (in order):
+          1. GET ?query=  — bypasses POST-only filters
+          2. Newline injection __schema\\n{...}  — bypasses naive string matching
+          3. Fragment spreading  — bypasses keyword-based WAF rules
+
+        On success: SchemaState is updated so S3/S4/S5 benefit from the schema.
+        """
+        # Skip if schema is already available
+        if self._schema_state.available:
+            logger.debug(
+                "[GQL-S2] Skipped — schema already available "
+                f"({self._schema_state.source_label})"
+            )
+            return []
+
+        # Skip if S1 was never run (status UNKNOWN) — don't attempt blind bypass
+        if self._schema_state.status == SchemaStatus.UNKNOWN:
+            logger.debug(
+                "[GQL-S2] Skipped — introspection status unknown. "
+                "Run GQL-S1 first."
+            )
+            return []
+
+        path = self._to_path(endpoint)
+
+        bypass_attempts = [
+            ("GET",  INTROSPECTION_PROBE,  "GET request with ?query= parameter"),
+            ("POST", BYPASS_NEWLINE_PROBE,  "newline injection in __schema field"),
+            ("POST", BYPASS_FRAGMENT_PROBE, "GraphQL fragment spreading"),
+        ]
+
+        for method, probe, technique in bypass_attempts:
+            if method == "GET":
+                r           = self.http.get(path, params={"query": probe})
+                payload_str = f"GET {path}?query={probe}"
+            else:
+                r           = self._gql_post(path, probe)
+                payload_str = probe
+
+            if not self._is_introspection_response(r):
+                continue
+
+            # Bypass succeeded — cache the schema
+            self._schema_state.raw    = self._parse_gql(r)
+            self._schema_state.status = SchemaStatus.AVAILABLE_FROM_BYPASS
+
+            logger.info(
+                f"    [VULN] GQL-S2 Introspection bypass ({technique}) → {endpoint}"
+            )
+            return [_vuln(
+                name       = "bypass",
+                endpoint   = endpoint,
+                method     = method,
+                payload    = payload_str,
+                evidence   = (
+                    f"HTTP {r.status_code} — introspection succeeded via {technique} "
+                    "despite being blocked on standard POST"
+                ),
+                extra_desc = f"Bypass technique: {technique}.",
+            )]
+
+        logger.info(
+            f"    [INFO] GQL-S2 — all bypass techniques failed on {endpoint}. "
+            "Schema-dependent tests (GQL-S3) will be skipped."
+        )
+        return []
+
+    # =========================================================================
     #  GQL-S3 — Sensitive field exposure
     # =========================================================================
 
     def _test_field_exposure(self, endpoint: str) -> list[ScanResult]:
+        """
+        Scan the schema for fields with sensitive names.
+
+        Requires schema. Clear log messages explain skip/fallback behavior.
+        """
         path = self._to_path(endpoint)
 
-        if not self._schema:
+        # Attempt live fetch if status is UNKNOWN
+        if not self._schema_state.available and self._schema_state.status == SchemaStatus.UNKNOWN:
             r = self._gql_post(path, INTROSPECTION_QUERY)
-            if not self._is_gql_response(r):
-                return []
-            self._schema = self._parse_gql(r)
+            if self._is_gql_response(r):
+                full = self._parse_gql(r)
+                if full and full.get("data", {}).get("__schema"):
+                    self._schema_state.raw    = full
+                    self._schema_state.status = SchemaStatus.AVAILABLE_FROM_SCAN
 
-        if not self._schema:
+        if not self._schema_state.available:
+            if self._schema_state.status == SchemaStatus.BLOCKED:
+                logger.info(
+                    "    [INFO] GQL-S3 Field Exposure — skipped. "
+                    "Introspection blocked and bypass failed. "
+                    "Tip: use --token if introspection requires authentication."
+                )
+            else:
+                logger.info(
+                    "    [INFO] GQL-S3 Field Exposure — skipped. "
+                    "Schema unavailable."
+                )
             return []
 
-        types = (
-            self._schema.get("data", {}).get("__schema", {}).get("types", [])
-        )
-
+        # Scan all types for sensitive field names
         found: list[str] = []
-        for gql_type in types:
+        for gql_type in self._schema_state.get_types():
             if not isinstance(gql_type, dict):
                 continue
             type_name = gql_type.get("name", "")
-            for field in (gql_type.get("fields") or []):
-                fname = (field.get("name") or "").lower()
+            if type_name.startswith("__"):
+                continue  # skip introspection meta-types
+            for f in (gql_type.get("fields") or []):
+                fname = (f.get("name") or "").lower()
                 for keyword in SENSITIVE_FIELDS:
                     if keyword in fname:
-                        found.append(f"{type_name}.{field.get('name')}")
+                        found.append(f"{type_name}.{f.get('name')}")
                         break
 
         if not found:
@@ -366,17 +621,23 @@ class GraphQLScanner:
 
         evidence = f"Sensitive fields in schema: {', '.join(found[:8])}"
         if len(found) > 8:
-            evidence += f" ... (+{len(found) - 8} more)"
+            evidence += f" (+{len(found) - 8} more)"
 
-        logger.info(f"    [VULN] GQL-S3 Field Exposure -> {endpoint} | {len(found)} field(s)")
+        logger.info(
+            f"    [VULN] GQL-S3 Field Exposure → {endpoint} | "
+            f"{len(found)} field(s) | source: {self._schema_state.source_label}"
+        )
         return [_vuln(
-            name      = "fields",
-            endpoint  = endpoint,
-            method    = "POST",
-            payload   = "Introspection — schema field analysis",
-            evidence  = evidence,
-            parameter = ", ".join(found[:3]),
-            extra     = f"Found {len(found)} sensitive field(s): {', '.join(found[:5])}{'...' if len(found) > 5 else ''}.",
+            name       = "fields",
+            endpoint   = endpoint,
+            method     = "POST",
+            payload    = f"Introspection analysis ({self._schema_state.source_label})",
+            evidence   = evidence,
+            parameter  = ", ".join(found[:3]),
+            extra_desc = (
+                f"Found {len(found)} sensitive field(s): "
+                f"{', '.join(found[:5])}{'...' if len(found) > 5 else ''}."
+            ),
         )]
 
     # =========================================================================
@@ -384,42 +645,79 @@ class GraphQLScanner:
     # =========================================================================
 
     def _test_broken_auth(self, endpoint: str) -> list[ScanResult]:
-        path             = self._to_path(endpoint)
-        mutations        = self._schema_mutations() or DANGEROUS_MUTATIONS
-        saved_auth       = self.http._session.headers.get("Authorization")
-        findings: list[ScanResult] = []
+        """
+        Test dangerous mutations without an auth token.
 
+        Schema-aware: uses real mutation names when schema is available.
+        Fallback: tests hardcoded DANGEROUS_MUTATIONS list.
+        Always logs which source is being used.
+        Token is always restored in the finally block.
+        """
+        path          = self._to_path(endpoint)
+        schema_muts   = self._schema_state.get_mutation_names()
+        using_fallback = False
+
+        if schema_muts:
+            mutations = schema_muts
+            logger.debug(f"[GQL-S4] Using {len(mutations)} mutations from schema")
+        else:
+            mutations      = DANGEROUS_MUTATIONS
+            using_fallback = True
+            if self._schema_state.status == SchemaStatus.BLOCKED:
+                logger.info(
+                    f"    [INFO] GQL-S4 Broken Auth — schema unavailable. "
+                    f"Testing {len(mutations)} hardcoded mutation names. "
+                    "Results may miss non-standard mutation names."
+                )
+
+        saved_auth = self.http._session.headers.get("Authorization")
         self.http.clear_token()
+        findings: list[ScanResult] = []
 
         try:
             for mutation_name in mutations:
-                query = f"mutation {{\n  {mutation_name}(id: 1) {{ id }}\n}}"
-                r     = self._gql_post(path, query)
-                if r is None:
+                query = (
+                    f"mutation {{\n"
+                    f"  {mutation_name}(id: 1) {{ id }}\n"
+                    f"}}"
+                )
+                r = self._gql_post(path, query)
+                if r is None or r.status_code >= 500:
                     continue
 
                 body_lower = (r.text or "").lower()
-                is_auth    = (
+
+                is_auth_error    = (
                     r.status_code in (401, 403)
                     or any(s in body_lower for s in AUTH_ERROR_SIGNALS)
                 )
-                is_missing = (
+                is_field_missing = (
                     r.status_code == 400
-                    and any(s in body_lower for s in ("cannot query field", "unknown field", "did you mean"))
+                    and any(s in body_lower for s in FIELD_MISSING_SIGNALS)
                 )
 
-                if not is_auth and not is_missing and r.status_code < 500:
-                    logger.info(f"    [VULN] GQL-S4 Broken Auth -> {endpoint} | {mutation_name}")
+                if not is_auth_error and not is_field_missing:
+                    source = " (hardcoded)" if using_fallback else " (from schema)"
+                    logger.info(
+                        f"    [VULN] GQL-S4 Broken Auth → {endpoint} | "
+                        f"mutation: {mutation_name}{source}"
+                    )
                     findings.append(_vuln(
-                        name      = "auth",
-                        endpoint  = endpoint,
-                        method    = "POST",
-                        payload   = query.strip(),
-                        parameter = mutation_name,
-                        evidence  = f"HTTP {r.status_code} — mutation '{mutation_name}' responded without auth error",
-                        extra     = f"Accessible mutation: {mutation_name}.",
+                        name       = "auth",
+                        endpoint   = endpoint,
+                        method     = "POST",
+                        payload    = query.strip(),
+                        parameter  = mutation_name,
+                        evidence   = (
+                            f"HTTP {r.status_code} — mutation '{mutation_name}' "
+                            "responded without an authentication error"
+                        ),
+                        extra_desc = (
+                            f"Mutation '{mutation_name}' is accessible without auth. "
+                            f"Schema source: {self._schema_state.source_label}."
+                        ),
                     ))
-                    break
+                    break  # one confirmed finding per endpoint is enough
         finally:
             if saved_auth:
                 self.http._session.headers["Authorization"] = saved_auth
@@ -431,40 +729,126 @@ class GraphQLScanner:
     # =========================================================================
 
     def _test_idor(self, endpoint: str) -> list[ScanResult]:
-        path       = self._to_path(endpoint)
-        candidates = self._build_idor_queries()
+        """
+        Test for Insecure Direct Object Reference on queries accepting id arguments.
 
-        for resource, query_tpl in candidates:
+        Schema-aware: derives candidates from real schema queries.
+        Fallback: uses hardcoded common resource names.
+        Logs which source is being used.
+        """
+        path       = self._to_path(endpoint)
+        candidates = self._build_idor_candidates()
+
+        for resource, arg_name, query_tpl in candidates:
             r1 = self._gql_post(path, query_tpl % 1)
-            if not self._is_gql_data(r1, resource):
+            if not self._has_data(r1, resource):
                 continue
 
             r2 = self._gql_post(path, query_tpl % 2)
-            if not self._is_gql_data(r2, resource):
+            if not self._has_data(r2, resource):
                 continue
 
             data1 = self._parse_gql(r1).get("data", {}).get(resource)
             data2 = self._parse_gql(r2).get("data", {}).get(resource)
 
             if data1 and data2 and str(data1) != str(data2):
-                logger.info(f"    [VULN] GQL-S5 IDOR -> {endpoint} | query: {resource}")
+                logger.info(
+                    f"    [VULN] GQL-S5 IDOR → {endpoint} | "
+                    f"query: {resource}({arg_name}) | "
+                    f"source: {self._schema_state.source_label}"
+                )
                 return [_vuln(
-                    name      = "idor",
-                    endpoint  = endpoint,
-                    method    = "POST",
-                    payload   = query_tpl % 2,
-                    parameter = f"{resource}(id)",
-                    evidence  = f"query {resource}(id:1) and {resource}(id:2) both return data — no authorization check",
-                    extra     = f"Vulnerable query: {resource}.",
+                    name       = "idor",
+                    endpoint   = endpoint,
+                    method     = "POST",
+                    payload    = query_tpl % 2,
+                    parameter  = f"{resource}({arg_name})",
+                    evidence   = (
+                        f"query {resource}({arg_name}:1) and ({arg_name}:2) "
+                        "both return data — no authorization check detected"
+                    ),
+                    extra_desc = (
+                        f"Vulnerable query: {resource}. "
+                        f"Schema source: {self._schema_state.source_label}."
+                    ),
                 )]
 
         return []
 
     # =========================================================================
-    #  GQL-S9 — Batch query attack
+    #  GQL-S6 — CSRF via GET or text/plain
+    # =========================================================================
+
+    def _test_csrf(self, endpoint: str) -> list[ScanResult]:
+        """
+        Test for CSRF via HTTP methods not subject to CORS preflight.
+
+        Schema not required — always runs.
+        Uses read-only probe { __typename } — no side effects.
+
+        Techniques:
+          1. HTTP GET with ?query=  (no preflight for GET)
+          2. POST with Content-Type: text/plain  (CORS-safe, no preflight)
+        """
+        path     = self._to_path(endpoint)
+        findings: list[ScanResult] = []
+
+        # Test 1 — GET
+        r_get = self.http.get(path, params={"query": CSRF_SAFE_PROBE})
+        if self._is_gql_response(r_get):
+            logger.info(f"    [VULN] GQL-S6 CSRF (GET) → {endpoint}")
+            findings.append(_vuln(
+                name       = "csrf",
+                endpoint   = endpoint,
+                method     = "GET",
+                payload    = f"GET {path}?query={CSRF_SAFE_PROBE}",
+                evidence   = (
+                    f"HTTP {r_get.status_code} — endpoint accepts "
+                    "GraphQL queries via HTTP GET"
+                ),
+                extra_desc = (
+                    "GET requests bypass CORS preflight. "
+                    "An attacker can trigger mutations cross-origin."
+                ),
+            ))
+
+        # Test 2 — POST text/plain
+        r_plain = self.http.post(
+            path,
+            data    = f'{{"query": "{CSRF_SAFE_PROBE}"}}',
+            headers = {"Content-Type": "text/plain"},
+        )
+        if self._is_gql_response(r_plain):
+            logger.info(f"    [VULN] GQL-S6 CSRF (text/plain) → {endpoint}")
+            findings.append(_vuln(
+                name       = "csrf",
+                endpoint   = endpoint,
+                method     = "POST",
+                payload    = (
+                    f"POST {path}  Content-Type: text/plain  "
+                    f'body: {{"query": "{CSRF_SAFE_PROBE}"}}'
+                ),
+                evidence   = (
+                    f"HTTP {r_plain.status_code} — endpoint accepts "
+                    "POST with Content-Type: text/plain"
+                ),
+                extra_desc = (
+                    "text/plain is a CORS-safe type — no preflight sent. "
+                    "Mutations can be triggered cross-origin."
+                ),
+            ))
+
+        return findings
+
+    # =========================================================================
+    #  GQL-S9 — Batch attack
     # =========================================================================
 
     def _test_batch_attack(self, endpoint: str) -> list[ScanResult]:
+        """
+        Confirm the server accepts large batches without a size limit.
+        Schema not required — always runs.
+        """
         path       = self._to_path(endpoint)
         batch_size = 50
         batch      = [{"query": "{ __typename }"}] * batch_size
@@ -474,12 +858,11 @@ class GraphQLScanner:
             return []
 
         body_lower = (r.text or "").lower()
-        is_blocked = (
+        if (
             r.status_code in (400, 429)
+            or r.status_code != 200
             or any(s in body_lower for s in BATCH_BLOCKED_SIGNALS)
-        )
-
-        if is_blocked or r.status_code != 200:
+        ):
             return []
 
         try:
@@ -490,13 +873,19 @@ class GraphQLScanner:
         if not isinstance(parsed, list) or len(parsed) < 2:
             return []
 
-        logger.info(f"    [VULN] GQL-S9 Batch Attack -> {endpoint} | {len(parsed)} queries processed")
+        logger.info(
+            f"    [VULN] GQL-S9 Batch Attack → {endpoint} | "
+            f"{len(parsed)}/{batch_size} queries processed"
+        )
         return [_vuln(
             name     = "batch",
             endpoint = endpoint,
             method   = "POST",
-            payload  = f"Array of {batch_size} query objects",
-            evidence = f"HTTP 200 — {len(parsed)} responses for a batch of {batch_size} — no limit enforced",
+            payload  = f"JSON array of {batch_size} query objects",
+            evidence = (
+                f"HTTP 200 — {len(parsed)}/{batch_size} batched queries "
+                "processed without a size limit"
+            ),
         )]
 
     # =========================================================================
@@ -504,6 +893,10 @@ class GraphQLScanner:
     # =========================================================================
 
     def _test_alias_attack(self, endpoint: str) -> list[ScanResult]:
+        """
+        Confirm the server resolves an unlimited number of aliases.
+        Schema not required — always runs.
+        """
         path        = self._to_path(endpoint)
         alias_count = 30
         aliases     = "\n  ".join(f"q{i}: __typename" for i in range(alias_count))
@@ -521,13 +914,19 @@ class GraphQLScanner:
         if not isinstance(data, dict) or len(data) < alias_count * 0.8:
             return []
 
-        logger.info(f"    [VULN] GQL-S10 Alias Attack -> {endpoint} | {len(data)}/{alias_count} aliases")
+        logger.info(
+            f"    [VULN] GQL-S10 Alias Attack → {endpoint} | "
+            f"{len(data)}/{alias_count} aliases resolved"
+        )
         return [_vuln(
             name     = "alias",
             endpoint = endpoint,
             method   = "POST",
             payload  = f"Query with {alias_count} aliases",
-            evidence = f"HTTP 200 — {len(data)}/{alias_count} aliases resolved — no alias limit enforced",
+            evidence = (
+                f"HTTP 200 — {len(data)}/{alias_count} aliases resolved "
+                "in a single request"
+            ),
         )]
 
     # =========================================================================
@@ -535,6 +934,10 @@ class GraphQLScanner:
     # =========================================================================
 
     def _test_depth_attack(self, endpoint: str) -> list[ScanResult]:
+        """
+        Confirm the server accepts deeply nested queries without a depth limit.
+        Uses __schema fields — always available, no schema needed.
+        """
         path  = self._to_path(endpoint)
         depth = 12
         query = self._build_deep_query(depth)
@@ -544,22 +947,91 @@ class GraphQLScanner:
             return []
 
         body_lower = (r.text or "").lower()
-        is_blocked = (
+        if (
             r.status_code in (400, 429)
+            or r.status_code >= 500
             or any(s in body_lower for s in DEPTH_BLOCKED_SIGNALS)
-        )
-
-        if is_blocked or r.status_code >= 500:
+        ):
             return []
 
-        logger.info(f"    [VULN] GQL-S11 Depth Attack -> {endpoint} | {depth} levels accepted")
+        logger.info(
+            f"    [VULN] GQL-S11 Depth Attack → {endpoint} | "
+            f"{depth} levels accepted"
+        )
         return [_vuln(
             name     = "depth",
             endpoint = endpoint,
             method   = "POST",
             payload  = f"Nested query — {depth} levels deep",
-            evidence = f"HTTP {r.status_code} — query nested {depth} levels accepted without depth-limit error",
+            evidence = (
+                f"HTTP {r.status_code} — query nested {depth} levels "
+                "accepted without a depth-limit error"
+            ),
         )]
+
+    # =========================================================================
+    #  GQL-S13 — Error disclosure
+    # =========================================================================
+
+    def _test_error_disclosure(self, endpoint: str) -> list[ScanResult]:
+        """
+        Test for verbose errors that leak internal implementation details.
+
+        Schema not required — always runs.
+        Sends 3 malformed probes and scans responses for 21 leak signals.
+        """
+        path = self._to_path(endpoint)
+
+        error_probes = [
+            "{ __typename nonExistentField_apisec_probe }",
+            "{ ??? }",
+            '{ __schema { types { fields(includeDeprecated: "INVALID") { name } } } }',
+        ]
+
+        for probe in error_probes:
+            r = self._gql_post(path, probe)
+            if r is None:
+                continue
+
+            try:
+                body     = self._parse_gql(r)
+                errors   = body.get("errors", [])
+                raw_text = r.text or ""
+            except Exception:
+                continue
+
+            for error in errors:
+                msg = (
+                    str(error.get("message",    ""))
+                    + str(error.get("extensions", ""))
+                    + raw_text
+                )
+
+                for signal, signal_desc in ERROR_LEAK_SIGNALS:
+                    if signal.lower() in msg.lower():
+                        idx     = msg.lower().find(signal.lower())
+                        excerpt = msg[max(0, idx - 20) : idx + 100].strip()
+
+                        logger.info(
+                            f"    [VULN] GQL-S13 Error Disclosure → {endpoint} | "
+                            f"{signal_desc}"
+                        )
+                        return [_vuln(
+                            name       = "error",
+                            endpoint   = endpoint,
+                            method     = "POST",
+                            payload    = probe,
+                            evidence   = (
+                                f"Error reveals {signal_desc}. "
+                                f'Excerpt: "{excerpt[:120]}"'
+                            ),
+                            extra_desc = (
+                                f"Signal: '{signal}' ({signal_desc}). "
+                                "Production servers should return generic errors only."
+                            ),
+                        )]
+
+        return []
 
     # =========================================================================
     #  Private helpers
@@ -580,7 +1052,19 @@ class GraphQLScanner:
         except Exception:
             return False
 
-    def _is_gql_data(self, r, key: str) -> bool:
+    def _is_introspection_response(self, r) -> bool:
+        if not self._is_gql_response(r):
+            return False
+        try:
+            body = self._parse_gql(r)
+            return bool(
+                body.get("data", {}).get("__schema")
+                or body.get("data", {}).get("__type")
+            )
+        except Exception:
+            return False
+
+    def _has_data(self, r, key: str) -> bool:
         if not self._is_gql_response(r):
             return False
         try:
@@ -598,44 +1082,52 @@ class GraphQLScanner:
 
     def _resolve_endpoints(self, endpoints: list[str]) -> list[str]:
         keywords = ("graphql", "gql", "query", "graph")
-        matched  = [ep for ep in endpoints if any(kw in ep.lower() for kw in keywords)]
+        matched  = [
+            ep for ep in endpoints
+            if any(kw in ep.lower() for kw in keywords)
+        ]
         if not matched:
+            logger.debug("[GraphQL] No GQL endpoints — probing common paths")
             return [f"{self.base_url}{p}" for p in GRAPHQL_ENDPOINTS]
         return matched
 
-    def _schema_mutations(self) -> list[str]:
-        if not self._schema:
-            return []
-        schema_data = self._schema.get("data", {}).get("__schema", {})
-        mut_type    = (schema_data.get("mutationType") or {}).get("name", "")
-        if not mut_type:
-            return []
-        for t in schema_data.get("types", []):
-            if t.get("name") == mut_type:
-                return [f.get("name", "") for f in (t.get("fields") or [])]
-        return []
+    def _build_idor_candidates(self) -> list[tuple[str, str, str]]:
+        """
+        Build (resource_name, arg_name, query_template) candidates for IDOR.
 
-    def _build_idor_queries(self) -> list[tuple[str, str]]:
-        candidates: list[tuple[str, str]] = []
+        Priority:
+          1. Real queries with id-like single arguments from SchemaState
+          2. Hardcoded heuristic list
+        """
+        candidates: list[tuple[str, str, str]] = []
 
-        if self._gql_schema:
-            for q in self._gql_schema.get("queries", []):
-                name    = q.get("name", "")
-                args    = q.get("args", [])
-                id_args = [a for a in args if "id" in a.lower()]
-                if len(args) == 1 and id_args:
-                    tpl = f"query {{ {name}({id_args[0]}: %d) {{ id }} }}"
-                    candidates.append((name, tpl))
+        for q in self._schema_state.get_query_fields():
+            name    = q.get("name", "")
+            args    = q.get("args", [])
+            id_args = [a for a in args if "id" in a.lower()]
+
+            if not id_args or len(args) != 1:
+                continue
+
+            arg_name = id_args[0]
+            tpl      = f"query {{ {name}({arg_name}: %d) {{ id }} }}"
+            candidates.append((name, arg_name, tpl))
 
         if candidates:
             return candidates
 
+        if self._schema_state.status == SchemaStatus.BLOCKED:
+            logger.info(
+                "    [INFO] GQL-S5 IDOR — schema unavailable. "
+                "Using hardcoded resource names — may miss non-standard queries."
+            )
+
         return [
-            ("user",    "query { user(id: %d) { id email name } }"),
-            ("post",    "query { post(id: %d) { id title content } }"),
-            ("order",   "query { order(id: %d) { id total status } }"),
-            ("account", "query { account(id: %d) { id balance } }"),
-            ("product", "query { product(id: %d) { id name price } }"),
+            ("user",    "id", "query { user(id: %d) { id email } }"),
+            ("post",    "id", "query { post(id: %d) { id title } }"),
+            ("order",   "id", "query { order(id: %d) { id total } }"),
+            ("account", "id", "query { account(id: %d) { id } }"),
+            ("product", "id", "query { product(id: %d) { id name } }"),
         ]
 
     def _build_deep_query(self, depth: int) -> str:
@@ -646,22 +1138,16 @@ class GraphQLScanner:
 
 
 # -----------------------------------------------------------------------------
-#  Module-level accessor for --list-tests inn main.py
+#  Module-level accessor for --list-tests
 # -----------------------------------------------------------------------------
 
 def get_gql_tests() -> list[dict]:
     """
-    Return all GraphQL tests from the knowledge base with implementation status.
-    Used by: apisec scan --list-tests (when api_type == GraphQL)
+    Return all GraphQL tests with implementation status.
+    Used by: apisec scan --list-tests
     """
     implemented = set(GraphQLScanner._TEST_REGISTRY.keys())
-    result      = []
-
-    for key, entry in _vulndb.all_tests:
-        result.append({
-            **entry,
-            "name":        key,
-            "implemented": key in implemented,
-        })
-
-    return result
+    return [
+        {**entry, "name": key, "implemented": key in implemented}
+        for key, entry in _vulndb.all_tests
+    ]
