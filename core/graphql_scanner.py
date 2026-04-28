@@ -91,18 +91,85 @@ BYPASS_FRAGMENT_PROBE = (
 # GQL-S6 safe probe — read-only, no side effects
 CSRF_SAFE_PROBE = "{ __typename }"
 
-SENSITIVE_FIELDS: list[str] = [
+# -----------------------------------------------------------------------------
+#  Wordlist loader
+# -----------------------------------------------------------------------------
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WL_DIR       = os.path.join(_PROJECT_ROOT, "wordlists", "graphql_wordlist", "10k")
+_WL_DIR_1K    = os.path.join(_PROJECT_ROOT, "wordlists", "graphql_wordlist", "1k")
+
+
+def _load_wordlist(filename: str, fallback: list[str]) -> list[str]:
+    """
+    Load a wordlist file from wordlists/graphql_wordlist/10k/.
+    Falls back to wordlists/graphql_wordlist/1k/ then to the hardcoded list.
+
+    Args:
+        filename : file name (e.g. "fieldWordlist-10k.txt")
+        fallback : hardcoded list used if no file is found
+
+    Returns:
+        List of stripped non-empty lines from the file, or fallback.
+    """
+    for directory in (_WL_DIR, _WL_DIR_1K):
+        path = os.path.join(directory, filename)
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    words = [line.strip() for line in f if line.strip()]
+                if words:
+                    logger.debug(
+                        f"[wordlist] Loaded {len(words)} entries from {path}"
+                    )
+                    return words
+            except OSError as e:
+                logger.warning(f"[wordlist] Cannot read {path}: {e}")
+
+    logger.debug(
+        f"[wordlist] {filename} not found — "
+        f"using built-in fallback ({len(fallback)} entries)"
+    )
+    return fallback
+
+
+# -----------------------------------------------------------------------------
+#  Sensitive field keywords
+# Built-in fallback — replaced by fieldWordlist-10k.txt when available
+# -----------------------------------------------------------------------------
+
+_SENSITIVE_FIELDS_FALLBACK: list[str] = [
     "password", "passwd", "secret", "token", "apikey", "api_key",
     "privatekey", "private_key", "ssn", "creditcard", "credit_card",
     "cvv", "pin", "otp", "hash", "salt", "signature", "bearer",
+    "auth", "credential", "key", "access", "refresh", "session",
+    "private", "master", "admin", "root",
 ]
 
-DANGEROUS_MUTATIONS: list[str] = [
+SENSITIVE_FIELDS: list[str] = _load_wordlist(
+    "fieldWordlist-10k.txt",
+    _SENSITIVE_FIELDS_FALLBACK,
+)
+
+
+# -----------------------------------------------------------------------------
+#  Dangerous mutation names
+# Built-in fallback — replaced by mutationFieldWordlist-10k.txt when available
+# -----------------------------------------------------------------------------
+
+_DANGEROUS_MUTATIONS_FALLBACK: list[str] = [
     "deleteUser", "deleteAccount", "promoteUser", "setRole",
     "updateRole", "grantAdmin", "revokeUser", "createAdmin",
     "resetPassword", "disableUser", "enableUser", "updatePermissions",
     "changePassword", "transferOwnership", "deleteOrganization",
+    "removeUser", "banUser", "elevatePrivilege", "setAdmin",
+    "updatePassword", "createUser", "destroyAccount",
 ]
+
+DANGEROUS_MUTATIONS: list[str] = _load_wordlist(
+    "mutationFieldWordlist-10k.txt",
+    _DANGEROUS_MUTATIONS_FALLBACK,
+)
 
 ERROR_LEAK_SIGNALS: list[tuple[str, str]] = [
     ("Traceback",                     "Python stack trace"),
@@ -850,7 +917,7 @@ class GraphQLScanner:
         Schema not required — always runs.
         """
         path       = self._to_path(endpoint)
-        batch_size = 50
+        batch_size = 100
         batch      = [{"query": "{ __typename }"}] * batch_size
 
         r = self.http.post(path, json=batch)
@@ -898,7 +965,7 @@ class GraphQLScanner:
         Schema not required — always runs.
         """
         path        = self._to_path(endpoint)
-        alias_count = 30
+        alias_count = 100
         aliases     = "\n  ".join(f"q{i}: __typename" for i in range(alias_count))
         query       = f"{{\n  {aliases}\n}}"
 
@@ -939,7 +1006,7 @@ class GraphQLScanner:
         Uses __schema fields — always available, no schema needed.
         """
         path  = self._to_path(endpoint)
-        depth = 12
+        depth = 100
         query = self._build_deep_query(depth)
 
         r = self._gql_post(path, query)

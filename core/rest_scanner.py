@@ -268,7 +268,7 @@ _TOKEN_FIELD_CANDIDATES: list[str] = [
 ]
 
 
-_RATE_LIMIT_ATTEMPTS   = 20
+_RATE_LIMIT_ATTEMPTS   = 100
 _RATE_LIMIT_HEADERS    = {
     "retry-after",
     "x-ratelimit-limit",
