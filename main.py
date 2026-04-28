@@ -98,12 +98,32 @@ RESET = "\033[0m"
 # -----------------------------------------------------------------------------
 
 def print_banner() -> None:
-    print(f"""
-\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
-\u2551       APISec - API Security Audit Tool  v{VERSION}                                                                                                                                                                                                                            \u2551
-\u2551        REST | GraphQL | SOAP  -  Audit                                                                                                                                                                                                                 \u2551
-\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d
-""")
+    R   = "\033[0m"
+    B   = "\033[94m"
+    DIM = "\033[2m"
+
+    W_INT = 66  # fixed internal width
+
+    def row(text: str = "", color: str = "") -> str:
+        return f"  {B}║{R}{color}{text.center(W_INT)}{R}{B}║{R}"
+
+    def sep() -> str:
+        return f"  {B}╠{'═' * W_INT}╣{R}"
+
+    print()
+    print(f"  {B}╔{'═' * W_INT}╗{R}")
+    print(row())
+    print(row("A P I S e c"))
+    print(row("API Security Audit Tool", DIM))
+    print(row())
+    print(sep())
+    print(row())
+    print(row("REST   ·   GraphQL   ·   SOAP"))
+    print(row())
+    print(row(f"v{VERSION}  ·  Recon  ·  Scan  ·  Exploit  ·  Report", DIM))
+    print(row())
+    print(f"  {B}╚{'═' * W_INT}╝{R}")
+    print()
 
 
 def print_discovery_result(result: dict) -> None:
