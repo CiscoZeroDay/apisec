@@ -1,0 +1,146 @@
+{
+  "_meta": {
+    "version": "2.0",
+    "standard": "OWASP API Security Top 10 2023",
+    "description": "SOAP vulnerability knowledge base for APISec scanner — 12 tests.",
+    "sources": [
+      "https://owasp.org/www-project-web-security-testing-guide/",
+      "https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html",
+      "https://www.ws-attacks.org/",
+      "https://blog.securelayer7.net/owasp-top-10-pentesting-mitigating-soap-service-risks/",
+      "https://www.levo.ai/resources/blogs/soap-api-security-testing"
+    ]
+  },
+
+  "wsdl": {
+    "id": "SOAP-01", "num": 1,
+    "label": "WSDL Exposure",
+    "severity": "MEDIUM", "confidence": "HIGH",
+    "owasp": "API8:2023 - Security Misconfiguration",
+    "cwe": "CWE-200",
+    "description": "The WSDL document is publicly accessible without authentication, disclosing the complete service contract: all operations, input/output schemas, binding protocols and endpoint URIs. High-risk operations (admin, delete, transfer, reset) are enumerated automatically.",
+    "solution": "Restrict WSDL access in production via authentication. Distribute WSDLs out-of-band to trusted partners. Remove unused operations from the published contract.",
+    "reference": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/07-Testing_for_XML_Injection"
+  },
+
+  "xxe": {
+    "id": "SOAP-02", "num": 2,
+    "label": "XML External Entity (XXE) Injection",
+    "severity": "CRITICAL", "confidence": "HIGH",
+    "owasp": "API8:2023 - Security Misconfiguration",
+    "cwe": "CWE-611",
+    "description": "The XML parser resolves external entities injected via DOCTYPE declarations. Enables local file disclosure (/etc/passwd, web.xml, config files), SSRF against internal services, and DoS via entity expansion. Every SOAP request crosses the parser before any business-logic validation.",
+    "solution": "Disable external entity processing at the XML parser level. Java: factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true). .NET: XmlReaderSettings.DtdProcessing = DtdProcessing.Prohibit. Reject DOCTYPE declarations via input validation.",
+    "reference": "https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html"
+  },
+
+  "sqli": {
+    "id": "SOAP-03", "num": 3,
+    "label": "SQL Injection via SOAP Parameters",
+    "severity": "CRITICAL", "confidence": "HIGH",
+    "owasp": "API3:2023 - Broken Object Property Level Authorization",
+    "cwe": "CWE-89",
+    "description": "User-controlled SOAP parameters are interpolated directly into SQL queries. Covers error-based (database error in response), boolean-based blind (response differs with true/false condition), and time-based blind (artificial delay when payload is injected) techniques.",
+    "solution": "Use parameterized queries exclusively. Apply XSD type constraints at the SOAP layer. Implement least-privilege DB accounts. Deploy a WAF with SQL injection rules.",
+    "reference": "https://owasp.org/www-community/attacks/SQL_Injection"
+  },
+
+  "injection": {
+    "id": "SOAP-04", "num": 4,
+    "label": "XML/SOAP Parameter Injection",
+    "severity": "HIGH", "confidence": "MEDIUM",
+    "owasp": "API8:2023 - Security Misconfiguration",
+    "cwe": "CWE-91",
+    "description": "String parameters are not sanitized for XML special characters. An attacker closes the current XML tag and injects additional elements — creating extra operations, forging roles, or altering business logic. Detected by comparing baseline response vs injected response structure.",
+    "solution": "Validate all SOAP messages against a strict XSD schema. Sanitize string parameters: strip or encode <, >, &, ', \". Define strict maxOccurs limits on elements in WSDL.",
+    "reference": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/07-Testing_for_XML_Injection"
+  },
+
+  "auth": {
+    "id": "SOAP-05", "num": 5,
+    "label": "Broken WS-Security Authentication",
+    "severity": "HIGH", "confidence": "HIGH",
+    "owasp": "API2:2023 - Broken Authentication",
+    "cwe": "CWE-306",
+    "description": "SOAP operations are accessible without authentication headers, or accept invalid/expired tokens. Tests: no auth header, invalid Bearer token, malformed WS-Security UsernameToken.",
+    "solution": "Enforce WS-Security authentication on every operation via a global SOAP handler. Use UsernameToken with PasswordDigest, or Bearer JWT at the transport layer. Reject requests missing valid security headers with a SOAP fault.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/"
+  },
+
+  "replay": {
+    "id": "SOAP-06", "num": 6,
+    "label": "SOAP Replay Attack",
+    "severity": "HIGH", "confidence": "MEDIUM",
+    "owasp": "API2:2023 - Broken Authentication",
+    "cwe": "CWE-294",
+    "description": "The service accepts replayed messages: identical requests succeed multiple times, and expired WS-Security Timestamps are not rejected. Without nonce/timestamp validation, captured requests can be replayed indefinitely.",
+    "solution": "Enforce wsu:Timestamp with expiry < 5 minutes. Validate timestamps server-side and reject expired messages. Implement a nonce cache to detect duplicate message IDs within the expiry window.",
+    "reference": "https://www.ws-attacks.org/Replay_Attack"
+  },
+
+  "action_spoofing": {
+    "id": "SOAP-07", "num": 7,
+    "label": "SOAPAction Header Spoofing",
+    "severity": "MEDIUM", "confidence": "MEDIUM",
+    "owasp": "API8:2023 - Security Misconfiguration",
+    "cwe": "CWE-290",
+    "description": "The server routes requests based on the SOAPAction HTTP header rather than the body element name. An attacker changes the header (and optionally the body) to invoke unintended privileged operations, bypassing operation-level access controls.",
+    "solution": "Dispatch operations based solely on the body element name, not the SOAPAction header. Cross-validate header vs body. Apply operation-level authorization on parsed body element, not HTTP header.",
+    "reference": "https://www.ws-attacks.org/SOAPAction_Spoofing"
+  },
+
+  "cmd_injection": {
+    "id": "SOAP-08", "num": 8,
+    "label": "OS Command Injection via SOAP Parameters",
+    "severity": "CRITICAL", "confidence": "HIGH",
+    "owasp": "API8:2023 - Security Misconfiguration",
+    "cwe": "CWE-78",
+    "description": "SOAP parameters that are passed to OS-level functions (DNS lookup, ping, file operations, shell execution) without sanitization allow an attacker to append shell commands using separators (; && || | &). Enables full server compromise.",
+    "solution": "Never pass user-controlled input directly to OS commands. Use language-native APIs instead of shell calls. Apply strict input validation: allow only expected character sets (alphanumeric, dots for IPs). Run services with least-privilege OS accounts.",
+    "reference": "https://owasp.org/www-community/attacks/Command_Injection"
+  },
+
+  "xml_dos": {
+    "id": "SOAP-09", "num": 9,
+    "label": "XML Denial of Service (Billion Laughs / Oversized Payload)",
+    "severity": "HIGH", "confidence": "MEDIUM",
+    "owasp": "API4:2023 - Unrestricted Resource Consumption",
+    "cwe": "CWE-400",
+    "description": "The XML parser has no limits on entity expansion depth, message size, or nesting depth. Billion Laughs payloads cause exponential memory expansion. Oversized SOAP bodies exhaust CPU and memory. Deep nesting causes stack overflows. All degrade or crash the service.",
+    "solution": "Disable DTD processing entirely. Set maximum XML document size (e.g. 1MB). Set maximum nesting depth. Set maximum entity expansion count. Deploy resource quotas per request at the API gateway level.",
+    "reference": "https://cheatsheetseries.owasp.org/cheatsheets/XML_Security_Cheat_Sheet.html"
+  },
+
+  "xpath_injection": {
+    "id": "SOAP-10", "num": 10,
+    "label": "XPath Injection via SOAP Parameters",
+    "severity": "HIGH", "confidence": "HIGH",
+    "owasp": "API3:2023 - Broken Object Property Level Authorization",
+    "cwe": "CWE-643",
+    "description": "SOAP parameters used in XPath queries against XML data stores are not sanitized. An attacker injects XPath expressions to bypass authentication, enumerate the XML tree, or access unauthorized nodes. Functionally equivalent to SQL injection for XML-backed services.",
+    "solution": "Use parameterized XPath queries (XPath variables). Validate and whitelist all input before use in XPath expressions. Apply XSD type constraints. Consider switching to a relational backend.",
+    "reference": "https://owasp.org/www-community/attacks/XPATH_Injection"
+  },
+
+  "fault_disclosure": {
+    "id": "SOAP-11", "num": 11,
+    "label": "Sensitive Information in SOAP Faults",
+    "severity": "MEDIUM", "confidence": "HIGH",
+    "owasp": "API8:2023 - Security Misconfiguration",
+    "cwe": "CWE-209",
+    "description": "SOAP Fault responses expose internal implementation details: stack traces, class names, framework versions, database query fragments, or internal file paths. This reconnaissance data significantly accelerates targeted attacks.",
+    "solution": "Return generic, non-descriptive Fault messages in production. Log detailed errors server-side only. Disable verbose error modes (Spring detail=always, PHP display_errors, etc.). Implement a global fault handler that sanitizes all error responses.",
+    "reference": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/08-Testing_for_Error_Handling/"
+  },
+
+  "bola": {
+    "id": "SOAP-12", "num": 12,
+    "label": "Broken Object Level Authorization (BOLA/IDOR)",
+    "severity": "HIGH", "confidence": "MEDIUM",
+    "owasp": "API1:2023 - Broken Object Level Authorization",
+    "cwe": "CWE-639",
+    "description": "SOAP operations that accept object identifiers (userId, accountId, recordId) do not verify that the authenticated caller owns the requested object. An attacker substitutes their own ID with another user's ID to access or modify unauthorized records.",
+    "solution": "Enforce server-side ownership checks on every operation that accepts an identifier. Never rely solely on the identifier provided in the request. Use indirect references (opaque tokens) instead of sequential integer IDs.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/"
+  }
+}
