@@ -735,8 +735,54 @@ class APIDiscovery:
                 f"mutations: {len(schema_result.mutations)}"
             )
 
+        elif detection.api_type == "SOAP":
+            # Pour SOAP — l'endpoint de base EST le service SOAP
+            # On l'ajoute directement sans crawl wordlist inutile
+            soap_ep = self.base_url
+            if soap_ep not in self.endpoints:
+                self.endpoints.append(soap_ep)
+                logger.info(f"[+] SOAP endpoint registered: {soap_ep}")
+
+            # Chercher aussi les endpoints WSDL pour les ajouter
+            for path in WSDL_PATHS:
+                r = self.http.get(path)
+                if r is None or r.status_code != 200:
+                    continue
+                try:
+                    text = r.content.decode("utf-8", errors="ignore").lower()
+                except Exception:
+                    text = ""
+                wsdl_keywords = ("wsdl", "definitions", "porttype", "binding")
+                if any(k in text for k in wsdl_keywords):
+                    wsdl_url = self.base_url + path
+                    if wsdl_url not in self.endpoints:
+                        self.endpoints.append(self.base_url)  # endpoint SOAP = base
+                    # Enrichir le tech stack depuis le WSDL
+                    if "dataaccess" in text or "dataflex" in text:
+                        self.tech_stack.append("Visual DataFlex")
+                    if "axis" in text:
+                        self.tech_stack.append("Apache Axis")
+                    if "cxf" in text:
+                        self.tech_stack.append("Apache CXF")
+                    if "wcf" in text or "microsoft" in text:
+                        self.tech_stack.append("Microsoft WCF")
+                    if "jboss" in text:
+                        self.tech_stack.append("JBoss WS")
+                    if "spring" in text:
+                        self.tech_stack.append("Spring-WS")
+                    # Détecter SOAP version depuis le namespace
+                    if "schemas.xmlsoap.org/soap/envelope" in text:
+                        self.tech_stack.append("SOAP 1.1")
+                    elif "www.w3.org/2003/05/soap-envelope" in text:
+                        self.tech_stack.append("SOAP 1.2")
+                    logger.info(f"[+] WSDL confirmed at {path}")
+                    break
+
+            # Dédupliquer tech stack
+            self.tech_stack = list(dict.fromkeys(self.tech_stack))
+
         else:
-            # REST / SOAP / Unknown → crawl wordlist classique
+            # REST / Unknown → crawl wordlist classique
             limit = 50 if mode == "quick" else None
             self.crawl_endpoints(wordlist_path, limit=limit)
 
