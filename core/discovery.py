@@ -152,48 +152,9 @@ class APIDiscovery:
     """
 
     def __init__(self, base_url: str, timeout: int = 5) -> None:
-        """
-        Initializes the discovery engine.
-
-        Handles three URL formats transparently:
-
-          1. Base URL only (recommended):
-             https://api.example.com
-             base_url  = https://api.example.com
-             seed_path = None
-
-          2. Base URL with versioned path:
-             https://api.example.com/api
-             base_url  = https://api.example.com
-             seed_path = /api  (boosts REST scoring)
-
-          3. Full endpoint URL from traffic capture:
-             https://api.example.com/api/user/wiener
-             base_url  = https://api.example.com
-             seed_path = /api/user/wiener  (registered as confirmed endpoint)
-
-        In all cases, scoring and crawling always operate from the root (/).
-        The seed_path is registered as a known endpoint and boosts detection.
-        """
-        parsed   = urlparse(base_url.rstrip("/"))
-        raw_path = parsed.path.rstrip("/") if parsed.path else ""
-
-        # Always use scheme + netloc as base — scoring always from root
-        self.base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-        # Preserve path if provided — registered as seed endpoint
-        self.seed_path: Optional[str] = (
-            raw_path if raw_path and raw_path != "/" else None
-        )
-
-        if self.seed_path:
-            logger.info(
-                f"[discovery] Path detected in URL: '{self.seed_path}' — "
-                f"base URL set to: {self.base_url}"
-            )
-
-        self.http     = Requester(self.base_url, timeout=timeout)
-        self.api_type = "Unknown"
+        self.base_url  = base_url.rstrip("/")
+        self.http      = Requester(self.base_url, timeout=timeout)
+        self.api_type  = "Unknown"
 
         self.tech_stack:        list[str] = []
         self.endpoints:         list[str] = []
@@ -914,40 +875,6 @@ class APIDiscovery:
         """
         logger.info(f"[*] Starting discovery on {self.base_url}")
 
-        # ── Seed endpoint from captured URL ──────────────────────────────────
-        # If the user provided a full URL with path (e.g. from traffic capture),
-        # register it as a confirmed endpoint and use its base path to boost
-        # REST scoring before the wordlist crawl begins.
-        if self.seed_path:
-            seed_url = f"{self.base_url}{self.seed_path}"
-            logger.info(f"[*] Seed endpoint from captured URL: {seed_url}")
-
-            # Verify the seed endpoint is reachable before registering
-            r_seed = self.http.get(self.seed_path)
-            if r_seed is not None and r_seed.status_code < 500:
-                if seed_url not in self.endpoints:
-                    self.endpoints.append(seed_url)
-                logger.info(
-                    f"[+] Seed endpoint confirmed: {seed_url} "
-                    f"(HTTP {r_seed.status_code})"
-                )
-            else:
-                logger.debug(
-                    f"[discovery] Seed endpoint unreachable: {seed_url}"
-                )
-
-            # Extract first path segment as API base for scoring boost
-            # Example: /api/user/wiener → /api
-            path_parts = [p for p in self.seed_path.split("/") if p]
-            if path_parts:
-                api_base = "/" + path_parts[0]
-                r_base   = self.http.get(api_base)
-                if r_base is not None and r_base.status_code in (200, 201, 401, 403):
-                    logger.info(
-                        f"[*] API base confirmed from seed: {api_base} "
-                        f"(HTTP {r_base.status_code})"
-                    )
-
         # Step 1 — API type detection
         detection = self.detect_api_type()
 
@@ -1055,22 +982,6 @@ class APIDiscovery:
             # REST or Unknown → wordlist crawl
             limit = 50 if mode == "quick" else None
             self.crawl_endpoints(wordlist_path, limit=limit)
-
-            # Upgrade Unknown → REST if seed endpoint was confirmed
-            # This handles the case where the user provided a full captured URL
-            # and the endpoint was directly registered without wordlist crawl
-            if detection.api_type == "Unknown" and self.seed_path and len(self.endpoints) > 0:
-                logger.info(
-                    f"[*] API type upgraded to REST — "
-                    f"seed endpoint confirmed: {self.seed_path}"
-                )
-                detection.api_type   = "REST"
-                detection.confidence = max(detection.confidence, 0.60)
-                detection.score      = max(detection.score, 3)
-                detection.reasons.append(
-                    f"REST confirmed from captured endpoint: {self.seed_path}"
-                )
-                self.api_type = "REST"
 
             # Upgrade Unknown → REST if crawl found confirmed endpoints
             # This handles APIs that don't respond to common REST paths
