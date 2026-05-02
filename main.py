@@ -551,14 +551,17 @@ def run_scan(
                 )
             scanner = RESTScanner(
                 base_url,
-                timeout    = args.timeout,
-                token      = token,
-                login_url  = getattr(args, "login_url",  None),
-                username   = getattr(args, "username",   None),
-                password   = getattr(args, "password",   None),
-                login_body = getattr(args, "login_body", None),
-                params_map = params_map,
-                deep       = getattr(args, "deep", False),
+                timeout      = args.timeout,
+                token        = token,
+                login_url    = getattr(args, "login_url",    None),
+                username     = getattr(args, "username",     None),
+                password     = getattr(args, "password",     None),
+                login_body   = getattr(args, "login_body",   None),
+                params_map   = params_map,
+                deep         = getattr(args, "deep",         False),
+                cookie       = getattr(args, "cookie",       None),
+                api_key      = getattr(args, "api_key",      None),
+                api_key_name = getattr(args, "api_key_name", "X-API-Key"),
             )
 
         return scanner.scan(endpoints, tests=tests)
@@ -1157,6 +1160,13 @@ def _common_args() -> argparse.ArgumentParser:
                    help="Enable verbose logging")
     p.add_argument("--deep",       action="store_true", default=False,
                    help="Deep scan - enables time-based techniques (slower)")
+    # ── Injection authentication ──────────────────────────────────────────────
+    p.add_argument("--cookie",        type=str, default=None, dest="cookie",
+                   help="Cookie string for injection tests (e.g. 'session=abc; csrf=xyz')")
+    p.add_argument("--api-key",       type=str, default=None, dest="api_key",
+                   help="API key value for injection tests")
+    p.add_argument("--api-key-name",  type=str, default="X-API-Key", dest="api_key_name",
+                   help="API key header name (default: X-API-Key)")
     return p
 
 
