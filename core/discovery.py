@@ -886,6 +886,23 @@ class APIDiscovery:
         # Step 3 — Swagger/OpenAPI (universal — works for REST and hybrid APIs)
         swagger_found = self.parse_swagger()
 
+        # Swagger/OpenAPI found → REST confirmed regardless of scoring
+        # This handles APIs where /api returns HTML (SPA) or scoring signals
+        # are absent — Swagger is definitive proof of a REST API.
+        if swagger_found and detection.api_type in ("Unknown", "REST"):
+            if detection.api_type == "Unknown":
+                logger.info(
+                    f"[*] API type upgraded to REST — "
+                    f"Swagger/OpenAPI confirmed {len(swagger_found)} endpoint(s)"
+                )
+            detection.api_type   = "REST"
+            detection.confidence = max(detection.confidence, 0.75)
+            detection.score      = max(detection.score, 3)
+            detection.reasons.append(
+                f"REST confirmed from Swagger/OpenAPI ({len(swagger_found)} endpoint(s))"
+            )
+            self.api_type = "REST"
+
         # Step 4 — API-type-specific endpoint collection
         gql_schema = None
 
