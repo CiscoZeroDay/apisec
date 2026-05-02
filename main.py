@@ -1287,6 +1287,10 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
     p.add_argument("--swagger-file",     default="swagger_captured.yaml", dest="swagger_file",
                    help="Intermediate OpenAPI spec file (default: swagger_captured.yaml)")
     p.set_defaults(func=cmd_capture)
+    p.add_argument("--api-type", type=str, default="REST",
+               choices=["REST", "GraphQL", "SOAP"],
+               dest="api_type",
+               help="Force API type when using --endpoint directly (default: REST)")
 
     return parser
 
