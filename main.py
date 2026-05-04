@@ -43,7 +43,7 @@ VERSION = "1.0"
 ALL_REST_TESTS: list[str] = [
     "misconfig", "auth", "sqli", "blind_sqli",
     "nosql", "xss", "idor", "ssrf",
-    "mass_assign", "rate_limit",
+    "mass_assign", "rate_limit","inventory","sensitive"
 ]
 
 # GraphQL tests — passed to GraphQLScanner
@@ -189,14 +189,12 @@ def print_scan_results(results: list) -> None:
     if not results:
         print("\n[OK] No vulnerabilities detected.\n")
         return
-
     print("\n" + "=" * 65)
     print(f"  SCAN RESULTS - {len(results)} finding(s) detected")
     print("=" * 65)
-
     for vuln in results:
         color = SEVERITY_COLORS.get(vuln.severity, "")
-        print(f"\n  [{color}{vuln.severity}{RESET}] [{vuln.vuln_id}] {vuln.vuln_type}")
+        print(f"\n{color}  [{vuln.severity}] [{vuln.vuln_id}] {vuln.vuln_type}")
         print(f"  Endpoint   : {vuln.endpoint}")
         print(f"  Method     : {vuln.method}")
         if vuln.parameter:
@@ -206,15 +204,14 @@ def print_scan_results(results: list) -> None:
         print(f"  Evidence   : {vuln.evidence}")
         print(f"  OWASP      : {vuln.owasp}  |  CWE: {vuln.cwe}  |  Confidence: {vuln.confidence}")
         print(f"  Description: {vuln.description}")
-        print(f"  Solution   : {vuln.solution}")
+        print(f"  Solution   : {vuln.solution}{RESET}")
         print("  " + "-" * 62)
-
     print("\n  SUMMARY:")
     for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
         count = sum(1 for v in results if v.severity == sev)
         if count:
-            print(f"    {SEVERITY_COLORS[sev]}{sev}{RESET} : {count}")
-
+            color = SEVERITY_COLORS.get(sev, "")
+            print(f"    {color}{sev} : {count}{RESET}")
     print("=" * 65 + "\n")
 
 
@@ -1220,6 +1217,10 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
                    help="Tests to run: all | comma-separated names | numbers (e.g. 1,3,4)")
     p.add_argument("--list-tests", action="store_true", default=False, dest="list_tests",
                    help="List available vulnerability tests for the detected API type")
+    p.add_argument("--api-type",   type=str, default="REST",
+                   choices=["REST", "GraphQL", "SOAP"],
+                   dest="api_type",
+                   help="Force API type when using --endpoint directly (default: REST)")
     p.set_defaults(func=cmd_scan)
 
     # full
@@ -1287,11 +1288,6 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
     p.add_argument("--swagger-file",     default="swagger_captured.yaml", dest="swagger_file",
                    help="Intermediate OpenAPI spec file (default: swagger_captured.yaml)")
     p.set_defaults(func=cmd_capture)
-    p.add_argument("--api-type", type=str, default="REST",
-               choices=["REST", "GraphQL", "SOAP"],
-               dest="api_type",
-               help="Force API type when using --endpoint directly (default: REST)")
-
     return parser
 
 

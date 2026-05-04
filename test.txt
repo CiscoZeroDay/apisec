@@ -147,3 +147,28 @@ pip install -e .
 # Lance
 apisec --help
 apisec discovery --url http://localhost:5000 --wordlist wordlists/common-rest.txt
+
+
+---------------------
+# Endpoint capturé → scan REST direct
+apisec scan \
+    --url https://xxx.net \
+    --endpoint /api/user/wiener \
+    --api-type REST \
+    --cookie "session=abc" \
+    --tests sqli
+
+# Endpoint GraphQL capturé → scan GraphQL direct
+apisec scan \
+    --url https://xxx.net \
+    --endpoint /graphql \
+    --api-type GraphQL \
+    --token "eyJ..." \
+    --tests introspection,auth
+
+# Sans préciser → REST par défaut
+apisec scan \
+    --url https://xxx.net \
+    --endpoint /api/user/wiener \
+    --cookie "session=abc" \
+    --tests sqli

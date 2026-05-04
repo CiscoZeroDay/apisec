@@ -1,87 +1,68 @@
-# APISec — Project Context
-
-## Project
-Automated API security audit tool — PFE + pre-employment stage.
-Language: Python | CLI tool installed via `pip install -e .`
-
-## Architecture
+CONTEXT — APISec PFE Project
+Je travaille sur APISec, un outil d'audit de sécurité API en Python (PFE). Voici l'état exact du projet :
+Structure :
 api_audit_tool/
-├── main.py                  # CLI — apisec command
-├── setup.py
+├── main.py                    # CLI — commandes: discovery, params, scan, full, capture
 ├── core/
-│   ├── discovery.py         # API detection + endpoint crawling
-│   ├── rest_scanner.py      # REST vulnerability scanner
-│   ├── graphql_scanner.py   # GraphQL scanner
-│   ├── soap_scanner.py      # SOAP scanner
-│   ├── param_discoverer.py  # Arjun-clone parameter discovery
-│   └── requester.py         # HTTP layer
-├── config/settings.py
-├── logger/logger.py
+│   ├── discovery.py           # Détection API type + crawl endpoints
+│   ├── rest_scanner.py        # Scanner REST — orchestration uniquement
+│   ├── graphql_scanner.py
+│   ├── soap_scanner.py
+│   ├── param_discoverer.py
+│   ├── models.py              # ScanResult dataclass
+│   ├── vuln_db.py             # VulnDB singleton — data/rest_vulns.json
+│   └── requester.py
+├── exploit/
+│   ├── sqli_engine.py         # SQLi via sqlmap
+│   ├── mass_engine.py         # Mass Assignment (API3)
+│   └── inventory_engine.py   # API9 — docs exposées, fichiers sensibles, debug, versioning
+├── data/
+│   └── rest_vulns.json        # KB avec: CORS-001/002/003, HDR-001/002/003/004, INFO-001/002, VERB-001, ERR-001, AUTH-001/002/003/004/005, SQLI-001, MASS-001, INV-001/002/003/004
 └── wordlists/
-## CLI Commands
-```bash
-apisec discovery --url URL --wordlist FILE --mode quick|full
-apisec params    --input endpoints.json [--wordlist FILE]
-apisec scan      --input endpoints.json --tests all [--token TOKEN]
-apisec scan      --login-url /auth/login --username X --password Y --tests auth
-apisec full      --url URL --wordlist FILE --tests all
-```
+    ├── api-endpoints-res.txt
+    ├── swagger.txt             # SecLists
+    ├── raft-large-files.txt    # SecLists
+    └── raft-large-directories.txt # SecLists
+Tests implémentés dans _TEST_REGISTRY :
+python"misconfig":   ✅ CORS, Headers, TRACE, Errors
+"auth":        ✅ AUTH-001 à AUTH-005 (JWT none, alg confusion, rate limit)
+"sqli":        ✅ via sqlmap
+"mass_assign": ✅ exploit/mass_engine.py
+"inventory":   ✅ exploit/inventory_engine.py (API9)
+# "nosql":     ❌ à implémenter
+# "xss":       ❌ à implémenter
+# "ssrf":      ❌ à implémenter
+# "sensitive": ❌ à implémenter
+# "idor":      ❌ à implémenter
+Architecture — règle absolue :
 
-## ScanResult fields (14 fields)
-vuln_id, vuln_type, owasp, cwe, severity, confidence,
-endpoint, method, parameter, payload, evidence,
-description, solution, reference
+rest_scanner.py = orchestration uniquement (stubs qui délèguent)
+Logique complexe = fichier séparé dans exploit/
+Pattern : _test_xxx(endpoint) → from exploit.xxx_engine import XxxEngine → engine.scan(endpoint)
 
-## _TEST_REGISTRY (rest_scanner.py)
-"misconfig" → _test_misconfig()   ✅ Done
-"auth"      → _test_auth()        ✅ Done
-"sqli"      → _test_sqli()        ❌ Next
-"blind_sqli"→ _test_blind_sqli()  ❌ Next
-"nosql"     → _test_nosql()       ❌ Planned
-"xss"       → _test_xss()         ❌ Planned
-"ssrf"      → _test_ssrf()        ❌ Planned
-"idor"      → _test_idor()        ❌ Planned
-"mass_assign"→_test_mass_assign() ❌ Planned
-"rate_limit"→ _test_rate_limit()  ❌ Planned
+CLI — arguments importants :
+bashapisec scan --input endpoints.json --tests inventory
+apisec scan --url https://xxx.net --endpoint /api/user/wiener --api-type REST --cookie "session=abc" --tests sqli
+apisec discovery --url https://xxx.net --wordlist wordlists/api-endpoints-res.txt
+Règles importantes :
 
-## Misconfig checks (API8)
-CORS-001 Reflected Origin         ✅
-CORS-002 Wildcard + Credentials   ✅
-CORS-003 Wildcard Origin          ✅
-HDR-001  Missing HSTS             ✅ (skipped on HTTP)
-HDR-002  Missing X-Content-Type   ✅
-HDR-003  Missing X-Frame-Options  ✅
-HDR-004  Missing CSP              ✅
-INFO-001 Server version           ✅
-INFO-002 X-Powered-By             ✅
-VERB-001 HTTP TRACE               ✅
-ERR-001  Verbose errors           ✅
+Ne jamais réduire le code existant sans permission explicite
+Toujours donner le code complet quand demandé
+Code solide, professionnel, digne de PFE
+Pas de hardcoding — sources dynamiques toujours préférées
+Même pattern que sqli_engine.py pour tout nouveau moteur
 
-## Auth checks (API2)
-AUTH-001 No token required        ✅
-AUTH-002 Invalid token accepted   ✅
-AUTH-003 JWT none algorithm       ✅
-AUTH-004 JWT alg confusion        ✅
-AUTH-005 Rate limiting on login   ❌ Next
+Ce qu'on vient de finir :
 
-## Deduplication
-Global checks (CORS, HDR, INFO, VERB) → deduplicated by vuln_id
-Endpoint-specific (AUTH, SQLi...) → kept as-is
+inventory_engine.py avec threading (ThreadPoolExecutor) + HEAD-before-GET optimization
+Bug trouvé : /.env n'est pas dans raft-large-files.txt → fix à faire : ajouter _ALWAYS_SENSITIVE paths au début de _check_sensitive_files() indépendamment de la wordlist
 
-## Test targets
-- JSONPlaceholder : https://jsonplaceholder.typicode.com
-- Juice Shop      : http://localhost:3000
-- crAPI           : http://localhost:8888
+Prochaines implémentations (dans l'ordre) :
 
-## Planning
-Week 1-3  : Discovery + basics        ✅
-Week 4    : JWT analyzer               partial
-Week 5    : Exploit engine (SQLi...)   🔄 current
-Week 6    : Analyzer + Score /100      ❌
-Week 7    : Report PDF/HTML/JSON       ❌
-Week 8    : Web dashboard              ❌
-Week 9    : CLI integration + tests    ❌
-Week 10   : Report writing + demo      ❌
+Fix inventory_engine.py — _ALWAYS_SENSITIVE toujours testés
+sensitive_data — détecter données sensibles dans réponses API (passwords, API keys, tokens, PII)
+xss — Reflected XSS dans réponses JSON
+ssrf — URL injection + AWS metadata
+nosql — MongoDB operator injection
 
-## Next step
-on continue avec l'implementation de _test_auth
+Repo GitHub : https://github.com/CiscoZeroDay/apisec.git

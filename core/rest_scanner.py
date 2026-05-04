@@ -27,6 +27,10 @@ Vulnerability classes implemented:
         AUTH-003 : JWT 'none' algorithm accepted
         AUTH-004 : JWT algorithm confusion (RS256 -> HS256)
 
+    [API3] Mass Assignment
+        MASS-001 : Hidden model fields writable via POST/PUT/PATCH
+                   (all logic delegated to exploit/mass_engine.py)
+
 Usage:
     # With manual token
     scanner = RESTScanner("https://api.example.com", token="eyJ...")
@@ -99,62 +103,7 @@ def _vuln(
         solution    = meta.get("solution",  "See OWASP API Security Cheat Sheet."),
         reference   = meta.get("reference", "https://owasp.org/API-Security/"),
     )
-# =============================================================================
-#  ScanResult
-# =============================================================================
 
-'''@dataclass
-class ScanResult:
-    """Enriched vulnerability finding — OWASP ZAP alert structure."""
-
-    vuln_id:     str            # "CORS-001"
-    vuln_type:   str            # "Reflected Origin CORS Misconfiguration"
-    owasp:       str            # "API8"
-    cwe:         str            # "CWE-942"
-    severity:    str            # CRITICAL | HIGH | MEDIUM | LOW | INFO
-    confidence:  str            # HIGH | MEDIUM | LOW
-    endpoint:    str
-    method:      str
-    parameter:   Optional[str]
-    payload:     Optional[str]
-    evidence:    str
-    description: str
-    solution:    str
-    reference:   str
-
-    def to_dict(self) -> dict:
-        return {
-            "vuln_id":     self.vuln_id,
-            "vuln_type":   self.vuln_type,
-            "owasp":       self.owasp,
-            "cwe":         self.cwe,
-            "severity":    self.severity,
-            "confidence":  self.confidence,
-            "endpoint":    self.endpoint,
-            "method":      self.method,
-            "parameter":   self.parameter,
-            "payload":     self.payload,
-            "evidence":    self.evidence,
-            "description": self.description,
-            "solution":    self.solution,
-            "reference":   self.reference,
-        }
-
-    def __str__(self) -> str:
-        lines = [
-            f"[{self.severity}] [{self.vuln_id}] {self.vuln_type}",
-            f"  Endpoint  : {self.endpoint}",
-            f"  Method    : {self.method}",
-        ]
-        if self.parameter:
-            lines.append(f"  Parameter : {self.parameter}")
-        if self.payload:
-            lines.append(f"  Payload   : {self.payload}")
-        lines.append(f"  Evidence  : {self.evidence[:200]}")
-        lines.append(f"  OWASP     : {self.owasp}  |  CWE: {self.cwe}  |  Confidence: {self.confidence}")
-        lines.append(f"  Solution  : {self.solution}")
-        return "\n".join(lines)
-'''
 
 # =============================================================================
 #  Module-level constants
@@ -293,15 +242,16 @@ class RESTScanner:
     """
 
     _TEST_REGISTRY: dict[str, str] = {
-        "misconfig": "_test_misconfig",
-        "auth":      "_test_auth",
+        "misconfig":   "_test_misconfig",
+        "auth":        "_test_auth",
         "sqli":        "_test_sqli",
-        # "blind_sqli":  "_test_blind_sqli",
+        "mass_assign": "_test_mass_assignment",
+        "inventory":   "_test_inventory",
         # "nosql":       "_test_nosql",
         # "xss":         "_test_xss",
         # "ssrf":        "_test_ssrf",
+        "sensitive":   "_test_sensitive_data",
         # "idor":        "_test_idor",
-        # "mass_assign": "_test_mass_assignment",
         # "rate_limit":  "_test_rate_limit",
     }
 
@@ -316,6 +266,9 @@ class RESTScanner:
         login_body: Optional[str] = None,
         params_map: Optional[dict] = None,
         deep:       bool = False,
+        cookie:       Optional[str] = None,       # ← ajouter
+        api_key:      Optional[str] = None,       # ← ajouter
+        api_key_name: str = "X-API-Key",   
     ) -> None:
         self.base_url  = base_url.rstrip("/")
         self.http      = Requester(self.base_url, timeout=timeout)
@@ -325,6 +278,9 @@ class RESTScanner:
         self.params_map = params_map or {} 
         self.deep = deep
         self._jwks_public_key_cache: Optional[str] = None
+        self.cookie       = cookie
+        self.api_key      = api_key
+        self.api_key_name = api_key_name
 
         if token:
             self.token = token
@@ -353,6 +309,7 @@ class RESTScanner:
         endpoints: list[str],
         tests:     Optional[list[str]] = None,
     ) -> list[ScanResult]:
+        self._endpoints = endpoints
         if tests is None:
             active = list(self._TEST_REGISTRY.keys())
         else:
@@ -756,6 +713,7 @@ class RESTScanner:
             logger.info(f"    [VULN] AUTH-004 JWT alg confusion ({original_alg}->HS256) -> {endpoint}")
 
         return findings
+
     def _check_login_rate_limit(self, endpoint: str) -> list[ScanResult]:
         """
         AUTH-005: Tests if the login endpoint enforces rate limiting.
@@ -827,6 +785,40 @@ class RESTScanner:
         logger.info(f"    [VULN] AUTH-005 No rate limiting on login -> {self.login_url}")
 
         return findings
+
+    # =========================================================================
+    #  [API3] Mass Assignment — delegated to exploit/mass_engine.py
+    # =========================================================================
+
+    def _test_mass_assignment(self, endpoint: str) -> list[ScanResult]:
+        """
+        [API3:2023] Mass Assignment — Broken Object Property Level Authorization.
+
+        Tests if hidden model fields can be injected via POST/PUT/PATCH requests
+        to manipulate server-side object state (privilege escalation, financial
+        manipulation, account takeover).
+
+        Detection strategy (3 dynamic sources — no hardcoding):
+          Source 1 — GET baseline: fields in GET response absent from POST body
+          Source 2 — Swagger/OpenAPI: hidden model fields from component schemas
+          Source 3 — params_map: confirmed parameters from ParamDiscoverer
+
+        All exploitation logic is delegated to exploit/mass_engine.py,
+        following the same architecture as SQLi → exploit/sqli_engine.py.
+        """
+        from exploit.mass_engine import MassAssignEngine
+
+        engine = MassAssignEngine(
+            base_url     = self.base_url,
+            timeout      = self.http.timeout,
+            token        = self.token,
+            cookie       = self.cookie,
+            api_key      = self.api_key,
+            api_key_name = self.api_key_name,
+            params_map   = self.params_map,
+        )
+        return engine.scan(endpoint)
+
     # =========================================================================
     #  Auto-login helpers
     # =========================================================================
@@ -1125,10 +1117,109 @@ class RESTScanner:
         engine = SQLiEngine(
             base_url = self.base_url,
             token    = self.token,
+            cookie       = self.cookie,        # ← ajouter
+            api_key      = self.api_key,       # ← ajouter
+            api_key_name = self.api_key_name,  # ← ajouter
             timeout  = self.http.timeout,
             deep     = self.deep,
         )
         return engine.scan(endpoint, params)
+    
+
+    # =========================================================================
+    #  [API9] Improper Inventory Management — delegated to exploit/inventory_engine.py
+    # =========================================================================
+
+    def _test_inventory(self, endpoint: str) -> list[ScanResult]:
+        """
+        [API9:2023] Improper Inventory Management.
+        Global check — runs once per scan regardless of endpoint count.
+        """
+        # Guard — runs only once per scan instance
+        if getattr(self, "_inventory_done", False):
+            return []
+        self._inventory_done = True
+
+        from exploit.inventory_engine import InventoryEngine
+        import os, json as _json
+
+        tech_stack:    list[str] = []
+        all_endpoints: list[str] = []
+
+        if os.path.isfile("endpoints.json"):
+            try:
+                with open("endpoints.json", encoding="utf-8") as f:
+                    data = _json.load(f)
+                tech_stack    = data.get("tech_stack", [])
+                all_endpoints = data.get("endpoints", [])
+            except Exception:
+                pass
+
+        engine = InventoryEngine(
+            base_url     = self.base_url,
+            timeout      = self.http.timeout,
+            token        = self.token,
+            cookie       = self.cookie,
+            api_key      = self.api_key,
+            api_key_name = self.api_key_name,
+            tech_stack   = tech_stack,
+            endpoints    = all_endpoints or [endpoint],
+        )
+        return engine.scan()
+
+    # =========================================================================
+    #  [API3/API8] Sensitive Data Exposure — delegated to exploit/sensitive_data_engine.py
+    # =========================================================================
+
+    def _test_sensitive_data(self, endpoint: str) -> list[ScanResult]:
+        """
+        [API3:2023] Broken Object Property Level Authorization
+        [API8:2023] Security Misconfiguration — Sensitive Data Exposure
+
+        Detects sensitive data returned in API responses across two detection levels:
+
+        Level 1 — Key-based (JSON field name analysis):
+            SENS-001 : Plaintext password / credentials
+            SENS-002 : Client secret / application secret
+            SENS-003 : API key / access key
+            SENS-004 : Private key material
+            SENS-005 : SSN / National ID (PII)
+            SENS-006 : Payment card fields
+
+        Level 2 — Value-based (compiled regex on response values):
+            SENS-007 : AWS Access Key ID
+            SENS-008 : AWS Secret Access Key (LOW confidence)
+            SENS-009 : Stripe live secret key
+            SENS-010 : Twilio Account SID / Auth Token
+            SENS-011 : JWT token in response body
+            SENS-012 : PEM private key block
+            SENS-013 : Email address (PII)
+            SENS-014 : Credit card number (Luhn-validated)
+            SENS-015 : Bearer token in response body
+            SENS-016 : Google API key
+            SENS-017 : GitHub personal access token
+
+        Global check — runs once per scan instance with all endpoints at once,
+        delegated to exploit/sensitive_data_engine.py which uses ThreadPoolExecutor
+        internally for parallel probing.
+        """
+        # Guard — runs only once per scan instance
+        if getattr(self, "_sensitive_done", False):
+            return []
+        self._sensitive_done = True
+
+        from exploit.sensitive_data_engine import SensitiveDataEngine
+
+        engine = SensitiveDataEngine(
+            base_url     = self.base_url,
+            timeout      = self.http.timeout,
+            token        = self.token,
+            cookie       = self.cookie,
+            api_key      = self.api_key,
+            api_key_name = self.api_key_name,
+        )
+        return engine.scan(self._endpoints)
+    
     
     def _deduplicate(self, findings: list[ScanResult]) -> list[ScanResult]:
         """
