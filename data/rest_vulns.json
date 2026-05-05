@@ -472,5 +472,89 @@
     "description": "A GitHub Personal Access Token (ghp_/gho_/ghu_/ghs_/ghr_) was detected in the API response. GitHub PATs grant access to repositories, organization membership, and depending on scope, can be used to push malicious code to production repositories.",
     "solution": "Revoke the token immediately on GitHub (Settings > Developer settings > Personal access tokens). Audit repository access logs. Use fine-grained tokens with minimal required scopes.",
     "reference": "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+  },
+   "NOSQL-001": {
+    "id": "NOSQL-001",
+    "label": "NoSQL Authentication Bypass",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "owasp": "API2:2023 - Broken Authentication",
+    "cwe": "CWE-943",
+    "impact": "Complete authentication bypass — attacker logs in as any user without knowing credentials.",
+    "description": "The authentication endpoint is vulnerable to NoSQL operator injection. By substituting credential values with MongoDB comparison operators ($gt, $ne, $regex...), an attacker can craft a query that always evaluates to true, bypassing the credential check entirely and obtaining a valid session token.",
+    "solution": "Validate and sanitize all authentication inputs server-side. Reject any input that is not a plain string in authentication fields. Use schema validation (Joi, Yup, class-validator) to enforce field types. Never pass raw request body objects directly to MongoDB queries — use explicit field extraction.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/"
+  },
+  "NOSQL-002": {
+    "id": "NOSQL-002",
+    "label": "NoSQL Operator Injection — Data Leak",
+    "severity": "HIGH",
+    "confidence": "HIGH",
+    "owasp": "API3:2023 - Broken Object Property Level Authorization",
+    "cwe": "CWE-943",
+    "impact": "Unauthorized data access — attacker bypasses query filters to access records they should not see.",
+    "description": "A query parameter accepts MongoDB comparison operators ($gt, $ne, $regex, $exists...) as values. An attacker can inject these operators to manipulate the database query logic, bypassing intended filters and accessing unauthorized records. This can lead to full collection enumeration or targeted data extraction.",
+    "solution": "Sanitize all query parameters before use in database queries. Enforce strict type checking — if a parameter should be a string or integer, reject objects. Use an ODM (Mongoose) with strict schema validation and avoid direct query object construction from request parameters.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa3-broken-object-property-level-authorization/"
+  },
+  "NOSQL-003": {
+    "id": "NOSQL-003",
+    "label": "NoSQL Error-based Fingerprinting",
+    "severity": "HIGH",
+    "confidence": "HIGH",
+    "owasp": "API8:2023 - Security Misconfiguration",
+    "cwe": "CWE-209",
+    "impact": "Confirms NoSQL operator evaluation and exposes backend technology — enables targeted injection attacks.",
+    "description": "The API returns verbose MongoDB/Mongoose error messages when malformed operators are injected. The presence of these error messages confirms that the backend evaluates NoSQL operators from user input and that error handling is not properly configured for production. This information directly enables targeted NoSQL injection attacks.",
+    "solution": "Configure production error handling to return generic error messages. Never expose internal database error details to API consumers. Implement a global error handler that sanitizes all error responses. Additionally, fix the underlying injection vulnerability by validating and sanitizing all inputs.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa8-security-misconfiguration/"
+  },
+  "SSRF-001": {
+    "id": "SSRF-001",
+    "label": "Server-Side Request Forgery — Cloud Metadata Access",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "owasp": "API7:2023 - Server Side Request Forgery",
+    "cwe": "CWE-918",
+    "impact": "Cloud credential theft — IAM role keys, instance identity, and infrastructure details exposed. Full AWS/GCP/Azure account compromise possible.",
+    "description": "The API endpoint makes server-side HTTP requests to URLs controlled by the attacker. A cloud metadata endpoint (AWS IMDSv1, GCP metadata, Azure IMDS) was successfully accessed through the vulnerable parameter. The server returned metadata content in its response, confirming In-Band SSRF. An attacker can use this to retrieve IAM role credentials, enabling full cloud infrastructure access.",
+    "solution": "1. Validate and allowlist all URLs before making server-side requests. 2. Block requests to 169.254.169.254, metadata.google.internal, and other cloud metadata endpoints at the network level. 3. Use IMDSv2 (AWS) which requires a session token and is not accessible via SSRF. 4. Deploy a WAF rule blocking outbound requests to RFC1918 and link-local address ranges. 5. Apply least-privilege IAM policies to limit the impact of credential theft.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/"
+  },
+  "SSRF-002": {
+    "id": "SSRF-002",
+    "label": "Server-Side Request Forgery — Internal Network Access",
+    "severity": "HIGH",
+    "confidence": "HIGH",
+    "owasp": "API7:2023 - Server Side Request Forgery",
+    "cwe": "CWE-918",
+    "impact": "Internal service exposure — localhost, internal APIs, and service banners accessible. May expose admin interfaces, unauthenticated internal endpoints, or sensitive configuration.",
+    "description": "The API endpoint makes server-side HTTP requests to URLs controlled by the attacker. A request to an internal network address (localhost, 127.0.0.1, or private IP range) was successfully processed and the response was returned to the attacker, confirming In-Band SSRF. An attacker can use this to scan the internal network, access unauthenticated admin interfaces, or interact with internal services (Redis, MongoDB, Elasticsearch) that are not exposed publicly.",
+    "solution": "1. Implement a URL allowlist — only permit requests to explicitly approved external domains. 2. Reject all URLs resolving to RFC1918 addresses (10.x, 172.16-31.x, 192.168.x) and loopback (127.0.0.1, ::1). 3. Perform DNS resolution server-side and validate the resolved IP before making the request. 4. Use a dedicated egress proxy that enforces the allowlist. 5. Disable unnecessary URL-fetching features in production.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/"
+  },
+  "SSRF-003": {
+    "id": "SSRF-003",
+    "label": "Server-Side Request Forgery — Connection Attempt Confirmed",
+    "severity": "HIGH",
+    "confidence": "HIGH",
+    "owasp": "API7:2023 - Server Side Request Forgery",
+    "cwe": "CWE-918",
+    "impact": "Confirmed SSRF — server made an outbound connection to an attacker-controlled URL. Can be leveraged to reach internal services, cloud metadata endpoints, or other internal infrastructure.",
+    "description": "The server attempted to connect to the URL injected into the parameter, as evidenced by a connection error in the response (e.g. 'Could not connect', 'ECONNREFUSED'). This confirms the server evaluates and processes user-supplied URLs as outbound requests. An attacker can leverage this to reach internal network services, cloud metadata endpoints (AWS IMDSv1, GCP, Azure), or internal admin interfaces not accessible from the internet.",
+    "solution": "1. Validate and allowlist all URLs before making server-side requests. 2. Block requests to RFC1918 addresses (10.x, 172.16-31.x, 192.168.x), loopback (127.0.0.1), and cloud metadata endpoints (169.254.169.254) at the network level. 3. Use IMDSv2 on AWS — requires a session token and is not accessible via basic SSRF. 4. Deploy egress filtering on API servers. 5. Never pass user-controlled URLs directly to HTTP client libraries.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/"
+  },
+  "SSRF-004": {
+    "id": "SSRF-004",
+    "label": "Potential Server-Side Request Forgery — Response Size Anomaly",
+    "severity": "MEDIUM",
+    "confidence": "MEDIUM",
+    "owasp": "API7:2023 - Server Side Request Forgery",
+    "cwe": "CWE-918",
+    "impact": "Potential SSRF — manual verification required to confirm impact.",
+    "description": "When a URL payload was injected into a parameter, the server returned a response significantly larger than the baseline, suggesting it may have fetched the specified URL and included its content in the response. This is a potential In-Band SSRF indicator. Manual verification is required to confirm the vulnerability and assess its impact.",
+    "solution": "1. Audit all parameters that accept URL values — implement strict validation and allowlisting. 2. Never make server-side HTTP requests to user-controlled URLs without validation. 3. If URL fetching is required by design, implement a URL allowlist, block private IP ranges, and use a sandboxed fetch proxy. 4. Monitor outbound requests from your API servers.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/"
   }
 }

@@ -29,3 +29,4 @@ workshop/api/mechanic/service_requests/mechanic_report
 workshop/api/vehicle/add-vehicle
 workshop/api/vehicle/vehicles
 workshop/api/vehicle/resend_email
+workshop/api/merchant/contact_mechanic

@@ -247,9 +247,9 @@ class RESTScanner:
         "sqli":        "_test_sqli",
         "mass_assign": "_test_mass_assignment",
         "inventory":   "_test_inventory",
-        # "nosql":       "_test_nosql",
+        "nosql":       "_test_nosql",
         # "xss":         "_test_xss",
-        # "ssrf":        "_test_ssrf",
+        "ssrf":        "_test_ssrf",
         "sensitive":   "_test_sensitive_data",
         # "idor":        "_test_idor",
         # "rate_limit":  "_test_rate_limit",
@@ -1220,6 +1220,130 @@ class RESTScanner:
         )
         return engine.scan(self._endpoints)
     
+    # =========================================================================
+    #  [API2/API3] NoSQL Injection — delegated to exploit/nosql_engine.py
+    # =========================================================================
+
+    def _test_nosql(self, endpoint: str) -> list[ScanResult]:
+        """
+        [API2:2023] Broken Authentication
+        [API3:2023] Broken Object Property Level Authorization
+        [API8:2023] Security Misconfiguration
+
+        Detects NoSQL injection vulnerabilities across three techniques:
+
+          NOSQL-001 — Authentication Bypass (boolean-based)
+            Targets login/auth endpoints. Injects True/False operator pairs
+            into credential fields and compares responses. CRITICAL only when
+            both True succeeds (200 + token) AND False fails (401/403).
+            Multi-signal scoring prevents false positives.
+
+          NOSQL-002 — Operator Injection / Data Leak (boolean-based)
+            Targets all parameterized endpoints. Injects MongoDB comparison
+            operators ($gt, $ne, $regex, $exists...) into each discovered
+            parameter. Reports when multiple signals confirm data leak:
+            status change, body size increase, new JSON keys, item count growth.
+
+          NOSQL-003 — Error-based Fingerprinting
+            Sends malformed operators ($where, $invalidOp, invalid $regex)
+            that trigger MongoDB/Mongoose error messages. Single signal
+            sufficient — error message = direct proof of operator evaluation.
+
+        Payload coverage:
+            Operator substitution, type confusion (array wrapping, compound),
+            unicode/encoding bypass variants, error-trigger operators.
+
+        Global check — runs once per scan instance with all endpoints,
+        delegated to exploit/nosql_engine.py which uses ThreadPoolExecutor
+        internally for parallel probing.
+        """
+        # Guard — runs only once per scan instance
+        if getattr(self, "_nosql_done", False):
+            return []
+        self._nosql_done = True
+
+        from exploit.nosql_engine import NosqlEngine
+
+        engine = NosqlEngine(
+            base_url     = self.base_url,
+            timeout      = self.http.timeout,
+            token        = self.token,
+            cookie       = self.cookie,
+            api_key      = self.api_key,
+            api_key_name = self.api_key_name,
+            params_map   = self.params_map,
+        )
+        return engine.scan(self._endpoints)
+
+    # =========================================================================
+    #  [API7] Server-Side Request Forgery — delegated to exploit/ssrf_engine.py
+    # =========================================================================
+
+    def _test_ssrf(self, endpoint: str) -> list[ScanResult]:
+        """
+        [API7:2023] Server Side Request Forgery — In-Band detection.
+
+        Self-sufficient parameter discovery — no ParamDiscoverer required.
+        The engine discovers injection points autonomously via 4 sources:
+
+          Source 1 — Error-based (highest priority):
+            POST with empty body → server lists required fields in 400/422.
+            e.g. {"mechanic_api": ["This field is required."]}
+            Most reliable — the server tells us exactly what it expects.
+
+          Source 2 — Value-based:
+            Fields whose baseline value is already an HTTP/HTTPS URL.
+            Detects custom field names regardless of naming convention.
+            e.g. {"mechanic_api": "http://service:8080/..."}
+
+          Source 3 — Name-based:
+            Fields matching URL-semantic name patterns
+            (url, uri, src, redirect, webhook, callback, api_url,
+             mechanic_api, image, photo, avatar, fetch, resource...)
+
+          Source 4 — Response body keys filtered by name patterns.
+
+        Payload tiers (tested in priority order):
+          Tier 1 — Cloud metadata  : AWS IMDSv1/v2, GCP, Azure IMDS (CRITICAL)
+          Tier 2 — Localhost       : 127.0.0.1, localhost, ::1, internal ports
+          Tier 3 — Bypass encodings: decimal IP, octal, hex, DNS rebinding
+
+        Response analysis — 3 levels of confirmation:
+          Primary   : Content indicators — AWS fields, /etc/passwd, banners
+          Secondary : Connection indicators — "Could not connect", ECONNREFUSED
+                      Proves server attempted to fetch the URL even without content
+          Tertiary  : Size anomaly — response 2x+ larger than baseline (MEDIUM)
+
+        Vulnerability classes:
+          SSRF-001 : Cloud metadata access — CRITICAL
+          SSRF-002 : Internal network access — HIGH
+          SSRF-003 : Connection attempt confirmed — HIGH
+          SSRF-004 : Size anomaly — MEDIUM (requires manual confirmation)
+
+        Blind SSRF is explicitly out of scope — requires external infrastructure.
+
+        Global check — runs once per scan instance with all endpoints,
+        delegated to exploit/ssrf_engine.py which uses ThreadPoolExecutor
+        internally for parallel probing.
+        """
+        # Guard — runs only once per scan instance
+        if getattr(self, "_ssrf_done", False):
+            return []
+        self._ssrf_done = True
+
+        from exploit.ssrf_engine import SSRFEngine
+
+        engine = SSRFEngine(
+            base_url     = self.base_url,
+            timeout      = self.http.timeout,
+            token        = self.token,
+            cookie       = self.cookie,
+            api_key      = self.api_key,
+            api_key_name = self.api_key_name,
+            # No params_map — SSRFEngine is self-sufficient
+        )
+        return engine.scan(self._endpoints)
+
     
     def _deduplicate(self, findings: list[ScanResult]) -> list[ScanResult]:
         """
