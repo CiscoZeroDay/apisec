@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="description" content="APISec — API Security Audit Tool"/>
+  <title>APISec — Scanner</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>"/>
+</head>
+<body>
+
+<!-- ── BACKGROUND ─────────────────────────────────────────────────── -->
+<div class="bg-layer" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-radial"></div>
+  <div class="bg-corner-tl"></div>
+  <div class="bg-corner-br"></div>
+  <div class="bg-scanline"></div>
+</div>
+
+<!-- ── HEADER ─────────────────────────────────────────────────────── -->
+<header class="header" role="banner">
+  <div class="header-inner">
+    <a href="/" class="logo">
+      <div class="logo-hex" aria-hidden="true"></div>
+      <div class="logo-meta">
+        <span class="logo-text">API<span class="accent">SEC</span></span>
+        <span class="logo-version">v2.0 · PFE Security Audit Tool</span>
+      </div>
+    </a>
+
+    <div class="header-status" aria-live="polite">
+      <div class="status-dot" title="Server online"></div>
+      <span id="header-stat" aria-label="Global statistics">—</span>
+    </div>
+
+    <nav class="nav" aria-label="Main navigation">
+      <a href="/"        class="nav-link active" aria-current="page">Scanner</a>
+      <a href="/history" class="nav-link">History</a>
+      <a href="https://github.com/CiscoZeroDay/apisec" target="_blank"
+         rel="noopener" class="nav-link">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ── MAIN ───────────────────────────────────────────────────────── -->
+<main class="main" role="main">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PANEL 1 — SCAN CONFIGURATION
+  ═══════════════════════════════════════════════════════════════ -->
+  <section class="panel" id="scan-panel" aria-label="Scan configuration">
+    <div class="panel-header">
+      <h1 class="panel-title"><span class="accent">◈</span> Scan Configuration</h1>
+      <span id="scan-status-badge" class="status-badge ready"
+            role="status" aria-live="polite">READY</span>
+    </div>
+
+    <form class="form-grid" onsubmit="return false" novalidate>
+
+      <!-- TARGET URL -->
+      <div class="field fg-span-2">
+        <label class="field-label" for="f-url">
+          Target URL
+          <span class="req" aria-label="Required">*</span>
+          <span class="hint">http(s)://hostname[:port]</span>
+        </label>
+        <input type="url" id="f-url" class="field-input"
+               placeholder="https://api.target.com"
+               autocomplete="off" spellcheck="false" required aria-required="true"/>
+      </div>
+
+      <!-- SPECIFIC ENDPOINT -->
+      <div class="field fg-span-2">
+        <label class="field-label" for="f-endpoint">
+          Specific Endpoint
+          <span class="hint">optional — leave empty for full scan (discovery + scan)</span>
+        </label>
+        <input type="text" id="f-endpoint" class="field-input"
+               placeholder="/api/v1/users  or  leave empty for a full scan"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <!-- API TYPE -->
+      <div class="field">
+        <span class="field-label">API Type</span>
+        <div class="radio-group" role="radiogroup" aria-label="API Type"
+             id="api-type-group">
+          <label class="radio-opt">
+            <input type="radio" name="api_type" value="REST" checked/>
+            <span class="radio-dot" aria-hidden="true"></span>
+            REST
+          </label>
+          <label class="radio-opt">
+            <input type="radio" name="api_type" value="GRAPHQL"/>
+            <span class="radio-dot" aria-hidden="true"></span>
+            GraphQL
+          </label>
+          <label class="radio-opt">
+            <input type="radio" name="api_type" value="SOAP"/>
+            <span class="radio-dot" aria-hidden="true"></span>
+            SOAP
+          </label>
+        </div>
+      </div>
+
+      <!-- WORDLIST -->
+      <div class="field">
+        <label class="field-label" for="f-wordlist">
+          Wordlist
+          <span class="hint">used for endpoint discovery</span>
+        </label>
+        <select id="f-wordlist" class="field-input" aria-label="Wordlist">
+          <option value="">— Default (api-endpoints-res.txt) —</option>
+        </select>
+      </div>
+
+      <!-- AUTHENTICATION -->
+      <div class="field">
+        <label class="field-label" for="f-token">
+          JWT Token
+          <span class="hint">Bearer …</span>
+        </label>
+        <input type="text" id="f-token" class="field-input"
+               placeholder="eyJhbGciOiJIUzI1NiIs…"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="f-cookie">Cookie</label>
+        <input type="text" id="f-cookie" class="field-input"
+               placeholder="session=abc123; csrf=xyz456"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="f-apikey">
+          API Key
+          <span class="hint">raw value</span>
+        </label>
+        <input type="text" id="f-apikey" class="field-input"
+               placeholder="sk-live-…"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <!-- OPTIONS -->
+      <div class="field">
+        <span class="field-label">Options</span>
+        <div class="toggle-row">
+          <label class="toggle" title="Print details for each request">
+            <input type="checkbox" id="f-verbose"/>
+            <span class="toggle-track" aria-hidden="true"></span>
+            Verbose
+          </label>
+          <label class="toggle" title="Enable time-based techniques (slower)">
+            <input type="checkbox" id="f-deep"/>
+            <span class="toggle-track" aria-hidden="true"></span>
+            Deep scan
+          </label>
+        </div>
+      </div>
+
+      <!-- ── TESTS — dynamically rendered by JS on API type change ── -->
+      <div class="field fg-span-4" id="tests-section">
+        <span class="field-label">
+          Tests to run
+          <!-- Dynamic pill showing current API type -->
+          <span id="tests-api-pill" class="api-type-pill">REST</span>
+          <span class="hint">select ALL or individual tests</span>
+        </span>
+        <!-- Populated by renderTests() — never edit this div by hand -->
+        <div class="checks-grid" id="tests-grid"
+             role="group" aria-label="Test selection"
+             aria-live="polite"></div>
+      </div>
+
+    </form>
+
+    <div class="form-actions" role="toolbar">
+      <button id="btn-launch" class="btn btn-primary" type="button">
+        <span class="btn-icon" aria-hidden="true">▶</span>
+        LAUNCH SCAN
+      </button>
+      <button id="btn-kill" class="btn btn-danger" type="button"
+              style="display:none">
+        <span class="btn-icon" aria-hidden="true">■</span>
+        STOP
+      </button>
+      <button id="btn-reset" class="btn btn-ghost" type="button">
+        <span class="btn-icon" aria-hidden="true">↺</span>
+        RESET
+      </button>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PANEL 2 — LIVE LOGS
+  ═══════════════════════════════════════════════════════════════ -->
+  <section class="panel hidden" id="output-panel" aria-label="Live scan logs">
+    <div class="panel-header">
+      <h2 class="panel-title"><span class="accent">◈</span> Scan Terminal</h2>
+      <div class="panel-controls">
+        <label class="toggle" style="font-size:.7rem">
+          <input type="checkbox" id="chk-autoscroll" checked/>
+          <span class="toggle-track" aria-hidden="true"></span>
+          Auto-scroll
+        </label>
+        <span id="scan-timer" class="scan-timer" aria-live="off">00:00</span>
+      </div>
+    </div>
+
+    <div class="console-wrap">
+      <div class="console-toolbar" aria-hidden="true">
+        <div class="console-dot-row">
+          <div class="console-dot red"></div>
+          <div class="console-dot yellow"></div>
+          <div class="console-dot green"></div>
+        </div>
+        <span class="console-label">apisec — stdout</span>
+      </div>
+      <div id="log-console" class="log-console" role="log" aria-live="polite">
+        <div id="log-inner"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PANEL 3 — FINDINGS
+  ═══════════════════════════════════════════════════════════════ -->
+  <section class="panel hidden" id="findings-panel" aria-label="Scan results">
+    <div class="panel-header">
+      <h2 class="panel-title"><span class="accent">◈</span> Findings</h2>
+      <div class="panel-controls">
+        <div class="sev-filter-bar" id="sev-filter-bar"
+             role="group" aria-label="Filter by severity">
+          <button class="sev-btn active" data-sev="all">ALL <span class="sev-count">0</span></button>
+          <button class="sev-btn" data-sev="CRITICAL">CRITICAL <span class="sev-count">0</span></button>
+          <button class="sev-btn" data-sev="HIGH">HIGH <span class="sev-count">0</span></button>
+          <button class="sev-btn" data-sev="MEDIUM">MEDIUM <span class="sev-count">0</span></button>
+          <button class="sev-btn" data-sev="LOW">LOW <span class="sev-count">0</span></button>
+          <button class="sev-btn" data-sev="INFO">INFO <span class="sev-count">0</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats-bar hidden" id="stats-bar">
+      <div class="stat-card critical"><span class="stat-n" id="cnt-critical">0</span><span class="stat-l">CRITICAL</span></div>
+      <div class="stat-card high">   <span class="stat-n" id="cnt-high">0</span>   <span class="stat-l">HIGH</span></div>
+      <div class="stat-card medium"> <span class="stat-n" id="cnt-medium">0</span> <span class="stat-l">MEDIUM</span></div>
+      <div class="stat-card low">    <span class="stat-n" id="cnt-low">0</span>    <span class="stat-l">LOW</span></div>
+      <div class="stat-card info">   <span class="stat-n" id="cnt-info">0</span>   <span class="stat-l">INFO</span></div>
+      <div class="stat-card total">
+        <span class="stat-n" id="cnt-total">0</span>
+        <span class="stat-l">TOTAL</span>
+        <span class="stat-n" id="cnt-duration" style="font-size:.75rem;color:var(--cyan);">—</span>
+      </div>
+    </div>
+
+    <div id="findings-list" class="findings-list" role="list" aria-live="polite"></div>
+
+    <div id="no-findings">
+      <div class="empty-state">
+        <div class="empty-icon" style="font-size:2rem;opacity:.3" aria-hidden="true">◎</div>
+        <div class="empty-title">Waiting for scan results…</div>
+      </div>
+    </div>
+
+    <div class="export-row hidden" id="export-row">
+      <button id="btn-dl-json" class="btn btn-ghost btn-sm" type="button">
+        <span aria-hidden="true">⬇</span> Download JSON
+      </button>
+      <button id="btn-dl-pdf" class="btn btn-ghost btn-sm" type="button">
+        <span aria-hidden="true">⬇</span> Download PDF
+      </button>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── MODAL ─────────────────────────────────────────────────────── -->
+<div id="modal-overlay" class="modal-overlay" style="display:none"
+     role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="modal-sev-badge" class="fc-sev-badge" aria-hidden="true"></span>
+      <span id="modal-title" class="modal-title"></span>
+      <button class="modal-close" id="modal-close" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

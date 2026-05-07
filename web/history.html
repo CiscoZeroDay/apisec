@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="description" content="APISec — Historique des scans"/>
+  <title>APISec — Historique</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>"/>
+</head>
+<body>
+
+<!-- ── BACKGROUND ─────────────────────────────────────────────────── -->
+<div class="bg-layer" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-radial"></div>
+  <div class="bg-corner-tl"></div>
+  <div class="bg-corner-br"></div>
+  <div class="bg-scanline"></div>
+</div>
+
+<!-- ── HEADER ─────────────────────────────────────────────────────── -->
+<header class="header" role="banner">
+  <div class="header-inner">
+    <a href="/" class="logo">
+      <div class="logo-hex" aria-hidden="true"></div>
+      <div class="logo-meta">
+        <span class="logo-text">API<span class="accent">SEC</span></span>
+        <span class="logo-version">v2.0 · PFE Security Audit Tool</span>
+      </div>
+    </a>
+
+    <div class="header-status">
+      <div class="status-dot" title="Serveur actif"></div>
+    </div>
+
+    <nav class="nav" aria-label="Navigation principale">
+      <a href="/"        class="nav-link">Scanner</a>
+      <a href="/history" class="nav-link active" aria-current="page">Historique</a>
+      <a href="https://github.com/CiscoZeroDay/apisec" target="_blank"
+         rel="noopener" class="nav-link">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ── MAIN ───────────────────────────────────────────────────────── -->
+<main class="main" role="main">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PANEL 1 — HISTORIQUE
+  ═══════════════════════════════════════════════════════════════ -->
+  <section class="panel" aria-label="Historique des scans">
+    <div class="panel-header">
+      <h1 class="panel-title"><span class="accent">◈</span> Historique des scans</h1>
+      <div class="panel-controls">
+        <button class="btn btn-ghost btn-sm" id="btn-refresh"
+                type="button" aria-label="Rafraîchir">↻ Rafraîchir</button>
+        <button class="btn btn-danger btn-sm" id="btn-clear-all"
+                type="button" aria-label="Supprimer tout l'historique">✕ Tout effacer</button>
+      </div>
+    </div>
+
+    <!-- KPIs -->
+    <div class="history-kpis hidden" id="history-kpis" role="complementary" aria-label="Statistiques globales">
+      <div class="kpi">
+        <span class="kpi-n" id="kpi-scans">0</span>
+        <span class="kpi-l">Scans</span>
+      </div>
+      <div class="kpi">
+        <span class="kpi-n" id="kpi-findings">0</span>
+        <span class="kpi-l">Findings</span>
+      </div>
+      <div class="kpi" style="border-color:rgba(255,23,68,0.25);background:rgba(255,23,68,0.05)">
+        <span class="kpi-n" id="kpi-critical" style="color:var(--critical)">0</span>
+        <span class="kpi-l">Critical</span>
+      </div>
+      <div class="kpi">
+        <span class="kpi-n" id="kpi-targets">0</span>
+        <span class="kpi-l">Cibles uniques</span>
+      </div>
+      <div class="kpi" style="border-color:rgba(0,230,118,0.25);background:rgba(0,230,118,0.05)">
+        <span class="kpi-n" id="kpi-done" style="color:var(--low)">0</span>
+        <span class="kpi-l">Terminés</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="history-table-wrap">
+      <table class="history-table" role="table" aria-label="Liste des scans">
+        <thead>
+          <tr>
+            <th scope="col">Date</th>
+            <th scope="col">Cible</th>
+            <th scope="col">Type</th>
+            <th scope="col">Tests</th>
+            <th scope="col">Statut</th>
+            <th scope="col">Findings</th>
+            <th scope="col">Durée</th>
+            <th scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="history-body" role="rowgroup">
+          <tr class="loading-row">
+            <td colspan="8">Chargement…</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PANEL 2 — DETAIL DU SCAN
+  ═══════════════════════════════════════════════════════════════ -->
+  <section class="panel hidden" id="detail-panel" aria-label="Détail du scan">
+    <div class="panel-header">
+      <h2 class="panel-title"><span class="accent">◈</span> Détail du scan</h2>
+      <div class="panel-controls">
+        <button class="btn btn-ghost btn-sm" id="detail-dl-json" type="button">⬇ JSON</button>
+        <button class="btn btn-ghost btn-sm" id="detail-dl-pdf"  type="button">⬇ PDF</button>
+        <button class="btn btn-ghost btn-sm" id="detail-close"   type="button"
+                aria-label="Fermer le détail">✕ Fermer</button>
+      </div>
+    </div>
+
+    <!-- Mini stats -->
+    <div class="stats-bar" role="complementary" aria-label="Sévérités">
+      <div class="stat-card critical">
+        <span class="stat-n" id="d-cnt-critical">0</span>
+        <span class="stat-l">CRITICAL</span>
+      </div>
+      <div class="stat-card high">
+        <span class="stat-n" id="d-cnt-high">0</span>
+        <span class="stat-l">HIGH</span>
+      </div>
+      <div class="stat-card medium">
+        <span class="stat-n" id="d-cnt-medium">0</span>
+        <span class="stat-l">MEDIUM</span>
+      </div>
+      <div class="stat-card low">
+        <span class="stat-n" id="d-cnt-low">0</span>
+        <span class="stat-l">LOW</span>
+      </div>
+      <div class="stat-card info">
+        <span class="stat-n" id="d-cnt-info">0</span>
+        <span class="stat-l">INFO</span>
+      </div>
+    </div>
+
+    <!-- Severity filter -->
+    <div style="padding:.75rem 1.25rem; border-bottom:1px solid var(--border)">
+      <div class="sev-filter-bar" id="detail-sev-filters"
+           role="group" aria-label="Filtrer les findings">
+        <button class="sev-btn active" data-sev="all">ALL</button>
+        <button class="sev-btn" data-sev="CRITICAL">CRITICAL</button>
+        <button class="sev-btn" data-sev="HIGH">HIGH</button>
+        <button class="sev-btn" data-sev="MEDIUM">MEDIUM</button>
+        <button class="sev-btn" data-sev="LOW">LOW</button>
+        <button class="sev-btn" data-sev="INFO">INFO</button>
+      </div>
+    </div>
+
+    <!-- Findings list -->
+    <div id="detail-findings" class="findings-list" role="list" aria-label="Findings du scan"></div>
+  </section>
+
+</main>
+
+<!-- ── MODAL ───────────────────────────────────────────────────────── -->
+<div id="modal-overlay" class="modal-overlay" style="display:none"
+     role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="modal-sev-badge" class="fc-sev-badge" aria-hidden="true"></span>
+      <span id="modal-title" class="modal-title"></span>
+      <button class="modal-close" id="modal-close" aria-label="Fermer">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

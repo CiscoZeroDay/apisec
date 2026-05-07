@@ -1,0 +1,7 @@
+2026-05-07 10:52:10 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-07 11:53:00 [INFO] Scan 9e0c9c2e-e7d7-4b9e-94e5-cc8dafd36fa9 started: https://0a8100290368419c808d0d3100aa0056.web-security-academy.net/  tests=all
+2026-05-07 11:53:01 [INFO] Scan 9e0c9c2e-e7d7-4b9e-94e5-cc8dafd36fa9 done: 0 findings in 1.1s
+2026-05-07 12:05:34 [INFO] Scan f4f9e0f2-a244-4277-a9e3-f4e9caac5c73 started: https://0a8100290368419c808d0d3100aa0056.web-security-academy.net/  tests=all
+2026-05-07 12:05:35 [INFO] Scan f4f9e0f2-a244-4277-a9e3-f4e9caac5c73 done: 0 findings in 0.7s
+2026-05-07 12:07:46 [INFO] Scan 020e9168-be33-41a8-b6e8-e5e55ab3b110 started: https://0a8100290368419c808d0d3100aa0056.web-security-academy.net/  tests=all
+2026-05-07 12:07:47 [INFO] Scan 020e9168-be33-41a8-b6e8-e5e55ab3b110 done: 0 findings in 0.5s
