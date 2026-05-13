@@ -1700,8 +1700,9 @@ class SOAPScanner:
     # =========================================================================
 
     def _rel(self, endpoint: str) -> str:
-        """Return a relative path for Requester by stripping the base URL."""
         path = endpoint.replace(self.base_url, "") or "/"
+        # Strip trailing slash — breaks some SOAP servers
+        path = path.rstrip("/") or "/"
         return path if path.startswith("/") or path.startswith("?") else "/" + path
 
     def _soap_post(
