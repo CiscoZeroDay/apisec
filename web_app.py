@@ -791,17 +791,17 @@ def report_json(scan_id: str) -> tuple[Response, int]:
 def report_pdf(scan_id: str) -> tuple[Response, int]:
     """GET /api/report/<id>/pdf — Generate and download PDF report."""
     try:
-        from reportlab.lib                 import colors
-        from reportlab.lib.pagesizes       import A4
-        from reportlab.lib.styles         import ParagraphStyle, getSampleStyleSheet
-        from reportlab.lib.units          import cm, mm
-        from reportlab.platypus           import (
+        from reportlab.lib            import colors
+        from reportlab.lib.pagesizes  import A4
+        from reportlab.lib.styles     import ParagraphStyle
+        from reportlab.lib.units      import cm, mm
+        from reportlab.platypus       import (
             HRFlowable, PageBreak, Paragraph,
             SimpleDocTemplate, Spacer, Table, TableStyle,
         )
     except ImportError:
         return jsonify({
-            "error": "reportlab non installé",
+            "error": "reportlab not installed",
             "fix":   "pip install reportlab",
         }), 500
 
@@ -843,21 +843,17 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
         author="APISec v2.0",
     )
 
-    styles = getSampleStyleSheet()
+    # Use unique names per scan_id to avoid reportlab's global style registry conflicts
+    _uid = scan_id[:8]
 
     def S(name, **kw) -> ParagraphStyle:
-        return ParagraphStyle(name, **kw)
+        return ParagraphStyle(f"{name}_{_uid}_{id(kw)}", **kw)
 
-    style_h1     = S("h1",  fontSize=22, fontName="Helvetica-Bold",
-                     textColor=C["accent"], spaceAfter=4)
-    style_h2     = S("h2",  fontSize=13, fontName="Helvetica-Bold",
-                     textColor=C["text"],  spaceBefore=12, spaceAfter=6)
-    style_body   = S("body",fontSize=9,  fontName="Helvetica",
-                     textColor=C["text"],  leading=14)
-    style_mono   = S("mono",fontSize=8,  fontName="Courier",
-                     textColor=C["text"],  leading=12)
-    style_label  = S("lbl", fontSize=7,  fontName="Helvetica-Bold",
-                     textColor=C["dim"],  leading=10)
+    style_h1    = S("h1",    fontSize=22, fontName="Helvetica-Bold",  textColor=C["accent"], spaceAfter=4)
+    style_h2    = S("h2",    fontSize=13, fontName="Helvetica-Bold",  textColor=C["text"],   spaceBefore=12, spaceAfter=6)
+    style_body  = S("body",  fontSize=9,  fontName="Helvetica",       textColor=C["text"],   leading=14)
+    style_mono  = S("mono",  fontSize=8,  fontName="Courier",         textColor=C["text"],   leading=12)
+    style_label = S("lbl",   fontSize=7,  fontName="Helvetica-Bold",  textColor=C["dim"],    leading=10)
 
     W = A4[0] - 4*cm   # usable width
 
@@ -957,7 +953,7 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
         story.append(hr())
         story.append(Spacer(1, 2*mm))
 
-        for i, f in enumerate(findings_rows, 1):
+        for i, f in enumerate([dict(r) for r in findings_rows], 1):
             sev   = (f["severity"] or "INFO").upper()
             color = C.get(sev, C["INFO"])
 

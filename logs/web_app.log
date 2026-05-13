@@ -5,3 +5,45 @@
 2026-05-07 12:05:35 [INFO] Scan f4f9e0f2-a244-4277-a9e3-f4e9caac5c73 done: 0 findings in 0.7s
 2026-05-07 12:07:46 [INFO] Scan 020e9168-be33-41a8-b6e8-e5e55ab3b110 started: https://0a8100290368419c808d0d3100aa0056.web-security-academy.net/  tests=all
 2026-05-07 12:07:47 [INFO] Scan 020e9168-be33-41a8-b6e8-e5e55ab3b110 done: 0 findings in 0.5s
+2026-05-13 15:31:37 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-13 15:32:47 [INFO] Scan 847575ce-0e89-43a2-9d8f-20e8a9f3186d started: http://webservices.oorsprong.org/websamples.countryinfo/CountryInfoService.wso  tests=wsdl
+2026-05-13 15:32:58 [INFO] Scan 847575ce-0e89-43a2-9d8f-20e8a9f3186d done: 1 findings in 10.4s
+2026-05-13 15:33:20 [ERROR] Exception on /api/report/847575ce-0e89-43a2-9d8f-20e8a9f3186d/pdf [GET]
+Traceback (most recent call last):
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\web_app.py", line 970, in report_pdf
+    Paragraph(f.get("vuln_id") or "—", S("fid", fontSize=8,
+              ^^^^^
+AttributeError: 'sqlite3.Row' object has no attribute 'get'
+2026-05-13 15:33:20 [ERROR] 500 error
+Traceback (most recent call last):
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\web_app.py", line 970, in report_pdf
+    Paragraph(f.get("vuln_id") or "—", S("fid", fontSize=8,
+              ^^^^^
+AttributeError: 'sqlite3.Row' object has no attribute 'get'
+2026-05-13 15:40:04 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-13 15:40:50 [INFO] Scan 11e1201a-bb96-4021-b3e5-05b829132b6e started: http://webservices.oorsprong.org/websamples.countryinfo/CountryInfoService.wso  tests=wsdl
+2026-05-13 15:41:00 [INFO] Scan 11e1201a-bb96-4021-b3e5-05b829132b6e done: 1 findings in 9.8s
