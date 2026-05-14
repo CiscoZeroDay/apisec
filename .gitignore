@@ -24,3 +24,4 @@ endpoints2.json
 "@ | Out-File -Encoding utf8 .gitignore
 wordlists/clairvoyance-main/
 bibliographie.txt
+old_discovery.py
