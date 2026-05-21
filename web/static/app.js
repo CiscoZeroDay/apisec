@@ -15,44 +15,255 @@
 const TESTS_BY_TYPE = {
 
   REST: [
-    { value: "misconfig",  name: "misconfig",   desc: "CORS, Security Headers, HTTP Verbs",       owasp: "API7" },
-    { value: "auth",       name: "auth",         desc: "JWT none / alg confusion, Rate limiting",  owasp: "API2" },
-    { value: "sqli",       name: "sqli",         desc: "SQL Injection via sqlmap",                  owasp: "API8" },
-    { value: "blind_sqli", name: "blind_sqli",   desc: "Blind / time-based SQL Injection",          owasp: "API8" },
-    { value: "nosql",      name: "nosql",         desc: "MongoDB operator injection",               owasp: "API8" },
-    { value: "xss",        name: "xss",           desc: "Cross-Site Scripting",                     owasp: "API8" },
-    { value: "idor",       name: "idor",          desc: "Insecure Direct Object Reference",         owasp: "API1" },
-    { value: "ssrf",       name: "ssrf",          desc: "In-Band SSRF Detection",                   owasp: "API7" },
-    { value: "mass_assign",name: "mass_assign",   desc: "Mass Assignment — OWASP API3",             owasp: "API3" },
-    { value: "rate_limit", name: "rate_limit",    desc: "Unrestricted resource consumption",        owasp: "API4" },
-    { value: "inventory",  name: "inventory",     desc: "Exposed docs, debug endpoints, versioning",owasp: "API9" },
-    { value: "sensitive",  name: "sensitive",     desc: "Secrets, PII, Cloud keys (SENS-001→017)",  owasp: "API3" },
+    {
+      value: "misconfig",
+      name:  "Security Misconfiguration",
+      owasp: "API7",
+      checks: ["CORS-001 — Wildcard Access-Control-Allow-Origin",
+               "CORS-002 — Reflected Origin without validation",
+               "CORS-003 — CORS with credentials exposed",
+               "HDR-001 — Missing X-Content-Type-Options",
+               "HDR-002 — Missing X-Frame-Options",
+               "HDR-003 — Missing Strict-Transport-Security",
+               "HDR-004 — Missing Content-Security-Policy",
+               "INFO-001 — Server version disclosure in headers",
+               "INFO-002 — Stack trace / debug info in response",
+               "VERB-001 — Dangerous HTTP methods enabled (PUT/DELETE/TRACE)",
+               "ERR-001 — Verbose error messages"],
+    },
+    {
+      value: "auth",
+      name:  "Broken Authentication",
+      owasp: "API2",
+      checks: ["AUTH-001 — JWT algorithm confusion (RS256→HS256)",
+               "AUTH-002 — JWT none algorithm accepted",
+               "AUTH-003 — JWT with expired token still accepted",
+               "AUTH-004 — JWT with invalid signature accepted",
+               "AUTH-005 — Brute-force / rate limit bypass on auth endpoint"],
+    },
+    {
+      value: "sqli",
+      name:  "SQL Injection",
+      owasp: "API8",
+      checks: ["SQLI-001 — SQL Injection via sqlmap (error-based, union, boolean)"],
+    },
+    {
+      value: "blind_sqli",
+      name:  "Blind SQL Injection",
+      owasp: "API8",
+      checks: ["SQLI-002 — Blind SQL Injection (boolean-based)",
+               "SQLI-003 — Time-based SQL Injection (sleep/benchmark)"],
+    },
+    {
+      value: "nosql",
+      name:  "NoSQL Injection",
+      owasp: "API8",
+      checks: ["NOSQL-001 — MongoDB $ne operator injection",
+               "NOSQL-002 — MongoDB $gt / $lt operator injection",
+               "NOSQL-003 — MongoDB $where JavaScript injection"],
+    },
+    {
+      value: "xss",
+      name:  "Cross-Site Scripting",
+      owasp: "API8",
+      checks: ["XSS-001 — Reflected Cross-Site Scripting in query params",
+               "XSS-002 — Stored XSS via API body parameters"],
+    },
+    {
+      value: "idor",
+      name:  "Broken Object Level Auth",
+      owasp: "API1",
+      checks: ["IDOR-001 — Numeric ID manipulation (id±1 to id±10)",
+               "IDOR-002 — UUID/GUID enumeration",
+               "IDOR-003 — Cross-account object access (requires --second-token)"],
+    },
+    {
+      value: "ssrf",
+      name:  "Server-Side Request Forgery",
+      owasp: "API7",
+      checks: ["SSRF-001 — In-Band SSRF via URL parameter",
+               "SSRF-002 — Cloud metadata endpoint probe (169.254.169.254)",
+               "SSRF-003 — Localhost / internal network probe",
+               "SSRF-004 — DNS rebinding detection"],
+    },
+    {
+      value: "mass_assign",
+      name:  "Mass Assignment",
+      owasp: "API3",
+      checks: ["MASS-001 — Mass Assignment via undocumented fields (role, isAdmin, privilege…)"],
+    },
+    {
+      value: "rate_limit",
+      name:  "Unrestricted Resource Consumption",
+      owasp: "API4",
+      checks: ["RATE-001 — Absence of rate limiting on sensitive endpoints",
+               "RATE-002 — Rate limit bypass via header manipulation (X-Forwarded-For)"],
+    },
+    {
+      value: "inventory",
+      name:  "Improper Inventory Management",
+      owasp: "API9",
+      checks: ["INV-001 — Exposed Swagger / OpenAPI documentation",
+               "INV-002 — Exposed debug endpoints (/debug, /trace, /actuator)",
+               "INV-003 — Exposed admin endpoints (/admin, /management)",
+               "INV-004 — Old API versions still accessible (/v1, /v2…)"],
+    },
+    {
+      value: "sensitive",
+      name:  "Sensitive Data Exposure",
+      owasp: "API3",
+      checks: ["SENS-001 to 017 — Password / secret detection in responses",
+               "SENS — API keys (AWS, GCP, Stripe, Twilio…)",
+               "SENS — PII data (emails, phone numbers, SSN, credit cards)",
+               "SENS — Cloud provider metadata & credentials",
+               "SENS — Private keys & certificates in responses"],
+    },
+    {
+      value: "bfla",
+      name:  "Broken Function Level Auth",
+      owasp: "API5",
+      checks: ["BFLA-001 — HTTP method tampering (GET→POST/PUT/DELETE)",
+               "BFLA-002 — Unauthorized access to admin-level endpoints"],
+    },
   ],
 
   GRAPHQL: [
-    { value: "introspection", name: "introspection", desc: "Schema introspection enabled",             owasp: "API7" },
-    { value: "bypass",        name: "bypass",        desc: "Auth bypass via field aliasing",           owasp: "API2" },
-    { value: "fields",        name: "fields",        desc: "Sensitive field exposure",                 owasp: "API3" },
-    { value: "auth",          name: "auth",          desc: "Missing object-level authorization",       owasp: "API1" },
-    { value: "idor",          name: "idor",          desc: "Insecure Direct Object Reference",         owasp: "API1" },
-    { value: "csrf",          name: "csrf",          desc: "Cross-Site Request Forgery",               owasp: "API2" },
-    { value: "sqli",          name: "sqli",          desc: "SQL Injection in GraphQL arguments",       owasp: "API8" },
-    { value: "nosqli",        name: "nosqli",        desc: "NoSQL Injection in GraphQL arguments",     owasp: "API8" },
-    { value: "batch",         name: "batch",         desc: "Batch query abuse / DoS",                  owasp: "API4" },
-    { value: "alias",         name: "alias",         desc: "Alias-based rate limit bypass",            owasp: "API4" },
-    { value: "depth",         name: "depth",         desc: "Unbounded query depth / complexity",       owasp: "API4" },
-    { value: "subscription",  name: "subscription",  desc: "Unauthenticated subscription access",      owasp: "API2" },
-    { value: "error",         name: "error",         desc: "Verbose error messages leaking internals", owasp: "API7" },
+    {
+      value: "introspection",
+      name:  "Schema Introspection",
+      owasp: "API7",
+      checks: ["GQL-001 — Schema introspection enabled in production",
+               "GQL-002 — Full type system exposed via __schema query"],
+    },
+    {
+      value: "bypass",
+      name:  "Authentication Bypass",
+      owasp: "API2",
+      checks: ["GQL-003 — Auth bypass via field aliasing",
+               "GQL-004 — Auth bypass via query batching"],
+    },
+    {
+      value: "fields",
+      name:  "Sensitive Field Exposure",
+      owasp: "API3",
+      checks: ["GQL-005 — Sensitive field exposure (passwords, tokens, secrets)",
+               "GQL-006 — Hidden / internal fields accessible"],
+    },
+    {
+      value: "auth",
+      name:  "Broken Object Authorization",
+      owasp: "API1",
+      checks: ["GQL-007 — Missing object-level authorization on queries",
+               "GQL-008 — Missing field-level authorization"],
+    },
+    {
+      value: "idor",
+      name:  "Broken Object Level Auth",
+      owasp: "API1",
+      checks: ["GQL-009 — Insecure Direct Object Reference via GraphQL ID arguments"],
+    },
+    {
+      value: "csrf",
+      name:  "Cross-Site Request Forgery",
+      owasp: "API2",
+      checks: ["GQL-010 — CSRF on mutations via GET request"],
+    },
+    {
+      value: "sqli",
+      name:  "SQL Injection",
+      owasp: "API8",
+      checks: ["GQL-011 — SQL Injection in GraphQL query/mutation arguments"],
+    },
+    {
+      value: "nosqli",
+      name:  "NoSQL Injection",
+      owasp: "API8",
+      checks: ["GQL-012 — NoSQL Injection in GraphQL arguments"],
+    },
+    {
+      value: "batch",
+      name:  "Batch Query Abuse",
+      owasp: "API4",
+      checks: ["GQL-013 — Batch query abuse leading to DoS",
+               "GQL-014 — Unbounded query execution"],
+    },
+    {
+      value: "alias",
+      name:  "Alias Rate Limit Bypass",
+      owasp: "API4",
+      checks: ["GQL-015 — Alias-based rate limit bypass (10+ aliases in one request)"],
+    },
+    {
+      value: "depth",
+      name:  "Unbounded Query Depth",
+      owasp: "API4",
+      checks: ["GQL-016 — Unbounded query depth (deeply nested queries)",
+               "GQL-017 — Query complexity not enforced"],
+    },
+    {
+      value: "subscription",
+      name:  "Unauth Subscription Access",
+      owasp: "API2",
+      checks: ["GQL-018 — Unauthenticated subscription access",
+               "GQL-019 — Subscription data leakage to unauthorized users"],
+    },
+    {
+      value: "error",
+      name:  "Verbose Error Disclosure",
+      owasp: "API7",
+      checks: ["GQL-020 — Verbose error messages leaking stack traces",
+               "GQL-021 — Internal field names / schema details in errors"],
+    },
   ],
 
   SOAP: [
-    { value: "wsdl",            name: "wsdl",            desc: "WSDL enumeration & info disclosure",    owasp: "API7" },
-    { value: "xxe",             name: "xxe",             desc: "XML External Entity (XXE) Injection",   owasp: "API8" },
-    { value: "sqli",            name: "sqli",            desc: "SQL Injection in SOAP parameters",      owasp: "API8" },
-    { value: "injection",       name: "injection",       desc: "XML/SOAP Injection",                    owasp: "API8" },
-    { value: "auth",            name: "auth",            desc: "Missing / weak WS-Security",            owasp: "API2" },
-    { value: "replay",          name: "replay",          desc: "Replay attack (missing timestamp/nonce)",owasp: "API2" },
-    { value: "action_spoofing", name: "action_spoofing", desc: "SOAPAction header spoofing",            owasp: "API1" },
+    {
+      value: "wsdl",
+      name:  "WSDL Enumeration",
+      owasp: "API7",
+      checks: ["SOAP-001 — WSDL publicly accessible without authentication",
+               "SOAP-002 — Service enumeration via WSDL (operations, types, bindings)"],
+    },
+    {
+      value: "xxe",
+      name:  "XML External Entity (XXE)",
+      owasp: "API8",
+      checks: ["SOAP-003 — XML External Entity (XXE) injection via SOAP body",
+               "SOAP-004 — Blind XXE via out-of-band channel"],
+    },
+    {
+      value: "sqli",
+      name:  "SQL Injection",
+      owasp: "API8",
+      checks: ["SOAP-005 — SQL Injection in SOAP operation parameters"],
+    },
+    {
+      value: "injection",
+      name:  "XML / SOAP Injection",
+      owasp: "API8",
+      checks: ["SOAP-006 — XML Injection in SOAP body",
+               "SOAP-007 — SOAP Parameter Tampering"],
+    },
+    {
+      value: "auth",
+      name:  "Broken Authentication",
+      owasp: "API2",
+      checks: ["SOAP-008 — Missing WS-Security header",
+               "SOAP-009 — Weak / cleartext credentials in WS-Security UsernameToken"],
+    },
+    {
+      value: "replay",
+      name:  "Replay Attack",
+      owasp: "API2",
+      checks: ["SOAP-010 — Replay attack (missing Timestamp or Nonce in WS-Security)",
+               "SOAP-011 — Message replay accepted after expiry"],
+    },
+    {
+      value: "action_spoofing",
+      name:  "SOAPAction Spoofing",
+      owasp: "API1",
+      checks: ["SOAP-012 — SOAPAction header spoofing (mismatch between header and body action)"],
+    },
   ],
 };
 
@@ -124,26 +335,36 @@ function renderTests(apiType) {
   }
 
   // Build HTML
-  // Row 0: ALL checkbox (always present)
+  // Row 0: ALL checkbox
   let html = `
     <label class="check-opt all-check" title="Run every test available for ${apiType}">
       <input type="checkbox" id="chk-all" checked aria-label="All tests"/>
-      <span>
-        <span class="check-name">ALL</span>
-        <span class="check-desc">— Run all ${tests.length} ${apiType} tests</span>
+      <span class="check-content">
+        <span class="check-header">
+          <span class="check-name">ALL</span>
+          <span class="owasp-tag">ALL ${tests.length} TESTS</span>
+        </span>
+        <span class="check-desc">Run every implemented ${apiType} check</span>
       </span>
     </label>`;
 
-  // Individual tests
+  // Individual tests with expandable check list
   tests.forEach(t => {
+    const checkItems = (t.checks || [])
+      .map(c => `<li class="chk-item">${esc(c)}</li>`)
+      .join("");
+
     html += `
-    <label class="check-opt" title="OWASP ${t.owasp}">
+    <label class="check-opt test-card">
       <input type="checkbox" class="test-chk" value="${t.value}"
              aria-label="${t.name}"/>
-      <span>
-        <span class="check-name">${t.name}</span>
-        <span class="check-desc">${t.desc}</span>
-        <span class="owasp-tag">${t.owasp}</span>
+      <span class="check-content">
+        <span class="check-header">
+          <span class="check-name">${t.name}</span>
+          <span class="owasp-tag">${t.owasp}</span>
+          <span class="check-count">${t.checks ? t.checks.length : 0} check${(t.checks||[]).length > 1 ? "s" : ""}</span>
+        </span>
+        <ul class="chk-list">${checkItems}</ul>
       </span>
     </label>`;
   });
@@ -244,15 +465,27 @@ let _sevFilter   = "all";
 function isIndexPage() { return !!document.getElementById("btn-launch"); }
 
 async function initIndexPage() {
-  // Render REST tests by default (matches the default radio selection)
+  // Default: AUTO selected → render REST tests as preview
+  // (discovery will decide the real type at runtime)
   renderTests("REST");
 
-  // Wire API type radio buttons → re-render test grid on change
+  // ── API Type radio → update test grid when user forces a type ──────────
   document.getElementById("api-type-group").addEventListener("change", (e) => {
-    if (e.target.name === "api_type") {
-      renderTests(e.target.value);
+    if (e.target.name !== "api_type") return;
+    const val = e.target.value;
+    // AUTO = user wants discovery to decide → show REST tests as default preview
+    renderTests(val === "AUTO" ? "REST" : val);
+
+    // Visual hint on Auto option
+    const autoLabel = document.getElementById("radio-auto-label");
+    if (autoLabel) {
+      autoLabel.classList.toggle("auto-active", val === "AUTO");
     }
   });
+
+  // Trigger initial state for Auto label
+  const autoLabel = document.getElementById("radio-auto-label");
+  if (autoLabel) autoLabel.classList.add("auto-active");
 
   await loadWordlists();
 
@@ -357,17 +590,27 @@ function getFormData() {
     ? ["all"]
     : [...document.querySelectorAll(".test-chk:checked")].map(c => c.value);
 
+  const apiType  = document.querySelector("input[name=api_type]:checked")?.value || "AUTO";
+  const discMode = document.querySelector("input[name=disc_mode]:checked")?.value  || "quick";
+
   return {
-    url:      document.getElementById("f-url").value.trim(),
-    endpoint: document.getElementById("f-endpoint").value.trim(),
-    api_type: document.querySelector("input[name=api_type]:checked")?.value || "REST",
-    tests:    tests.length ? tests : ["all"],
-    wordlist: document.getElementById("f-wordlist").value.trim(),
-    token:    document.getElementById("f-token").value.trim(),
-    cookie:   document.getElementById("f-cookie").value.trim(),
-    api_key:  document.getElementById("f-apikey").value.trim(),
-    verbose:  document.getElementById("f-verbose").checked,
-    deep:     document.getElementById("f-deep").checked,
+    url:          document.getElementById("f-url").value.trim(),
+    endpoint:     document.getElementById("f-endpoint").value.trim(),
+    api_type:     apiType,   // "AUTO" = let discovery decide, or "REST"/"GRAPHQL"/"SOAP"
+    disc_mode:    discMode,  // "quick" (50 paths) or "full" (entire wordlist)
+    tests:        tests.length ? tests : ["all"],
+    wordlist:     document.getElementById("f-wordlist")?.value.trim() || "",
+    token:        document.getElementById("f-token").value.trim(),
+    second_token: document.getElementById("f-second-token")?.value.trim() || "",
+    cookie:       document.getElementById("f-cookie").value.trim(),
+    api_key:      document.getElementById("f-apikey").value.trim(),
+    api_key_name: document.getElementById("f-apikey-name")?.value.trim() || "",
+    login_url:    document.getElementById("f-login-url")?.value.trim() || "",
+    username:     document.getElementById("f-username")?.value.trim() || "",
+    password:     document.getElementById("f-password")?.value.trim() || "",
+    timeout:      parseInt(document.getElementById("f-timeout")?.value || "10", 10),
+    verbose:      document.getElementById("f-verbose").checked,
+    deep:         document.getElementById("f-deep").checked,
   };
 }
 
@@ -382,6 +625,8 @@ async function launchScan() {
     notify("Invalid URL — must start with http:// or https://", "error");
     return;
   }
+  // If api_type is forced (not AUTO) and no endpoint → full scan with forced type
+  // If endpoint provided → single endpoint scan
 
   // Reset state
   _allFindings = []; _sevFilter = "all";

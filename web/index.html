@@ -4,7 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="description" content="APISec — API Security Audit Tool"/>
-  <title>APISec — Scanner</title>
+  <title>APISec - API Security Audit Tool</title>
   <link rel="stylesheet" href="/static/style.css"/>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>"/>
 </head>
@@ -82,13 +82,21 @@
                autocomplete="off" spellcheck="false"/>
       </div>
 
-      <!-- API TYPE -->
-      <div class="field">
-        <span class="field-label">API Type</span>
+      <!-- API TYPE — optional, auto-detected if not selected -->
+      <div class="field fg-span-2">
+        <span class="field-label">
+          API Type
+          <span class="hint">optional — auto-detected by discovery if not set</span>
+        </span>
         <div class="radio-group" role="radiogroup" aria-label="API Type"
              id="api-type-group">
+          <label class="radio-opt auto-opt" id="radio-auto-label" title="Let discovery decide">
+            <input type="radio" name="api_type" value="AUTO" checked/>
+            <span class="radio-dot" aria-hidden="true"></span>
+            Auto
+          </label>
           <label class="radio-opt">
-            <input type="radio" name="api_type" value="REST" checked/>
+            <input type="radio" name="api_type" value="REST"/>
             <span class="radio-dot" aria-hidden="true"></span>
             REST
           </label>
@@ -105,18 +113,41 @@
         </div>
       </div>
 
-      <!-- WORDLIST -->
+      <!-- WORDLIST + DISCOVERY MODE -->
       <div class="field">
         <label class="field-label" for="f-wordlist">
           Wordlist
-          <span class="hint">used for endpoint discovery</span>
+          <span class="hint">endpoint discovery</span>
         </label>
         <select id="f-wordlist" class="field-input" aria-label="Wordlist">
           <option value="">— Default (api-endpoints-res.txt) —</option>
         </select>
       </div>
 
+      <!-- DISCOVERY MODE quick / full -->
+      <div class="field">
+        <span class="field-label">
+          Discovery Mode
+          <span class="hint">ignored if specific endpoint is set</span>
+        </span>
+        <div class="radio-group" role="radiogroup" aria-label="Discovery mode">
+          <label class="radio-opt" title="First 50 paths — fast">
+            <input type="radio" name="disc_mode" value="quick" checked/>
+            <span class="radio-dot" aria-hidden="true"></span>
+            Quick
+            <span class="mode-badge">50 paths</span>
+          </label>
+          <label class="radio-opt" title="Full wordlist — thorough">
+            <input type="radio" name="disc_mode" value="full"/>
+            <span class="radio-dot" aria-hidden="true"></span>
+            Full
+            <span class="mode-badge">all paths</span>
+          </label>
+        </div>
+      </div>
+
       <!-- AUTHENTICATION -->
+      <!-- ── AUTHENTICATION ─────────────────────────── -->
       <div class="field">
         <label class="field-label" for="f-token">
           JWT Token
@@ -124,6 +155,16 @@
         </label>
         <input type="text" id="f-token" class="field-input"
                placeholder="eyJhbGciOiJIUzI1NiIs…"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="f-second-token">
+          Second JWT Token
+          <span class="hint">IDOR high-confidence confirmation</span>
+        </label>
+        <input type="text" id="f-second-token" class="field-input"
+               placeholder="eyJhbGciOiJIUzI1NiIs… (second account)"
                autocomplete="off" spellcheck="false"/>
       </div>
 
@@ -144,7 +185,51 @@
                autocomplete="off" spellcheck="false"/>
       </div>
 
-      <!-- OPTIONS -->
+      <div class="field">
+        <label class="field-label" for="f-apikey-name">
+          API Key Header
+          <span class="hint">default: X-API-Key</span>
+        </label>
+        <input type="text" id="f-apikey-name" class="field-input"
+               placeholder="X-API-Key"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <!-- ── AUTO-LOGIN ──────────────────────────────── -->
+      <div class="field">
+        <label class="field-label" for="f-login-url">
+          Login URL
+          <span class="hint">auto-authentication</span>
+        </label>
+        <input type="text" id="f-login-url" class="field-input"
+               placeholder="https://target.com/api/login"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="f-username">Username</label>
+        <input type="text" id="f-username" class="field-input"
+               placeholder="admin@target.com"
+               autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="f-password">Password</label>
+        <input type="password" id="f-password" class="field-input"
+               placeholder="••••••••"
+               autocomplete="off"/>
+      </div>
+
+      <!-- ── OPTIONS ─────────────────────────────────── -->
+      <div class="field">
+        <label class="field-label" for="f-timeout">
+          Timeout (s)
+          <span class="hint">1–60, default 10</span>
+        </label>
+        <input type="number" id="f-timeout" class="field-input"
+               value="10" min="1" max="60" step="1"/>
+      </div>
+
       <div class="field">
         <span class="field-label">Options</span>
         <div class="toggle-row">
@@ -292,5 +377,166 @@
 </div>
 
 <script src="/static/app.js"></script>
+
+<!-- ── AI CHAT WIDGET ─────────────────────────────── -->
+<div id="ai-chat-widget" class="ai-widget">
+
+  <!-- Bubble -->
+  <button class="ai-bubble" id="ai-bubble-btn" title="AI Security Assistant">
+    <span class="ai-bubble-icon">&#11041;</span>
+    <span class="ai-bubble-label">AI</span>
+    <span class="ai-notif-dot" id="ai-notif-dot" style="display:none"></span>
+  </button>
+
+  <!-- Panel -->
+  <div class="ai-panel" id="ai-panel" aria-hidden="true">
+
+    <!-- Header -->
+    <div class="ai-panel-header">
+      <div class="ai-header-left">
+        <span class="ai-header-icon">&#11041;</span>
+        <div>
+          <div class="ai-header-title">APISec AI</div>
+          <div class="ai-header-sub" id="ai-provider-label">Security Assistant</div>
+        </div>
+      </div>
+      <div class="ai-header-right">
+        <button class="ai-icon-btn" id="ai-clear-btn" title="Clear conversation">&#8634;</button>
+        <button class="ai-icon-btn" id="ai-close-btn" title="Close">&#10005;</button>
+      </div>
+    </div>
+
+    <!-- SETUP SCREEN -->
+    <div class="ai-setup-screen" id="ai-setup-screen" style="display:flex">
+      <div class="ai-setup-hero">
+        <div class="ai-setup-icon">&#11041;</div>
+        <div class="ai-setup-title">Choose your AI provider</div>
+        <div class="ai-setup-sub">Power APISec with AI to auto-analyze findings,<br/>explain vulnerabilities and generate reports.</div>
+      </div>
+      <div class="ai-provider-cards">
+
+        <div class="ai-prov-card" id="setup-groq-btn">
+          <div class="ai-prov-card-top">
+            <span class="ai-prov-card-icon">&#9889;</span>
+            <div>
+              <div class="ai-prov-card-name">Groq <span class="ai-prov-badge free">FREE</span></div>
+              <div class="ai-prov-card-model">llama-3.1-8b-instant &mdash; ultra fast</div>
+            </div>
+          </div>
+          <div class="ai-prov-card-desc">Free API key at console.groq.com. Findings sent to Groq servers.</div>
+          <div class="ai-prov-card-action">Connect Groq &rarr;</div>
+        </div>
+
+        <div class="ai-prov-card" id="setup-ollama-btn">
+          <div class="ai-prov-card-top">
+            <span class="ai-prov-card-icon">&#128274;</span>
+            <div>
+              <div class="ai-prov-card-name">Ollama <span class="ai-prov-badge local">LOCAL</span></div>
+              <div class="ai-prov-card-model">llama3.2 &mdash; runs on your machine</div>
+            </div>
+          </div>
+          <div class="ai-prov-card-desc">100% local. No internet. No data leaves your machine. Requires Ollama installed.</div>
+          <div class="ai-prov-card-action">Use Ollama &rarr;</div>
+        </div>
+
+      </div>
+    </div><!-- /setup-screen -->
+
+    <!-- CHAT SCREEN -->
+    <div class="ai-chat-screen" id="ai-chat-screen" style="display:none;flex-direction:column;flex:1;overflow:hidden">
+
+      <div class="ai-provider-bar">
+        <span class="ai-prov-dot" id="ai-prov-dot"></span>
+        <span id="ai-prov-text">Not configured</span>
+        <span class="ai-prov-switch" id="ai-prov-switch" title="Change provider">&#8644;</span>
+      </div>
+
+      <div class="ai-messages" id="ai-messages" role="log" aria-live="polite">
+        <div class="ai-welcome">
+          <div class="ai-welcome-icon">&#11041;</div>
+          <div class="ai-welcome-text">
+            <strong>APISec AI Assistant</strong><br/>
+            Run a scan and I will analyze your findings automatically,
+            or ask me anything about API security.
+          </div>
+        </div>
+      </div>
+
+      <div class="ai-suggestions" id="ai-suggestions">
+        <button class="ai-sugg" onclick="AiChat.suggest(this)">Explain the top risk</button>
+        <button class="ai-sugg" onclick="AiChat.suggest(this)">Generate executive summary</button>
+        <button class="ai-sugg" onclick="AiChat.suggest(this)">Show remediation plan</button>
+        <button class="ai-sugg" onclick="AiChat.suggest(this)">What is OWASP API Top 10?</button>
+      </div>
+
+      <div class="ai-input-row">
+        <textarea id="ai-input" class="ai-textarea"
+                  placeholder="Ask about your findings, vulnerabilities, fixes..."
+                  rows="1"></textarea>
+        <button class="ai-send-btn" id="ai-send-btn">&#9654;</button>
+      </div>
+
+    </div><!-- /chat-screen -->
+
+  </div><!-- /ai-panel -->
+</div><!-- /ai-widget -->
+
+<!-- PRIVACY WARNING MODAL -->
+<div class="ai-modal-overlay" id="ai-warning-modal">
+  <div class="ai-modal">
+    <div class="ai-modal-icon warning">&#9888;</div>
+    <div class="ai-modal-title">Data Privacy Warning</div>
+    <div class="ai-modal-body">
+      <p>You are about to connect <strong id="warn-provider-name">this provider</strong>, a cloud AI service.</p>
+      <p>Your scan findings (endpoints, vulnerabilities, evidence) will be sent to <strong id="warn-server-name">their servers</strong> for analysis.</p>
+      <div class="ai-modal-warn-box">
+        <strong>&#9888; Do not use this option if:</strong>
+        <ul>
+          <li>You are auditing a client production system</li>
+          <li>Your findings contain confidential business data</li>
+          <li>Your engagement has a strict NDA or data residency requirement</li>
+        </ul>
+      </div>
+      <p class="ai-modal-alt">For full confidentiality, use <strong>Ollama</strong> &mdash; runs 100% locally, no data leaves your machine.</p>
+    </div>
+    <div class="ai-modal-actions">
+      <button class="ai-modal-btn secondary" id="warn-decline-btn">Use Ollama instead</button>
+      <button class="ai-modal-btn primary"   id="warn-accept-btn">I understand, continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- API KEY INPUT MODAL -->
+<div class="ai-modal-overlay" id="ai-setup-modal">
+  <div class="ai-modal">
+    <div class="ai-modal-icon groq" id="setup-modal-icon">?</div>
+    <div class="ai-modal-title" id="setup-modal-title">Connect API</div>
+    <div class="ai-modal-body">
+      <div class="ai-setup-steps">
+        <div class="ai-step">
+          <span class="ai-step-n">1</span>
+          <span id="setup-step1">Go to the provider website</span>
+        </div>
+        <div class="ai-step">
+          <span class="ai-step-n">2</span>
+          <span id="setup-step2">Create an API key</span>
+        </div>
+        <div class="ai-step">
+          <span class="ai-step-n">3</span>
+          <span id="setup-step3">Paste your key below</span>
+        </div>
+      </div>
+      <input type="password" id="setup-key-input" class="ai-key-input"
+             placeholder="Paste your API key here"
+             autocomplete="off" spellcheck="false"/>
+      <div class="ai-setup-error" id="setup-error"></div>
+    </div>
+    <div class="ai-modal-actions">
+      <button class="ai-modal-btn secondary" id="setup-cancel-btn">Cancel</button>
+      <button class="ai-modal-btn primary"   id="setup-confirm-btn">Validate &amp; Connect</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/chat.js"></script>
 </body>
-</html>

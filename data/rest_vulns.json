@@ -556,5 +556,41 @@
     "description": "When a URL payload was injected into a parameter, the server returned a response significantly larger than the baseline, suggesting it may have fetched the specified URL and included its content in the response. This is a potential In-Band SSRF indicator. Manual verification is required to confirm the vulnerability and assess its impact.",
     "solution": "1. Audit all parameters that accept URL values — implement strict validation and allowlisting. 2. Never make server-side HTTP requests to user-controlled URLs without validation. 3. If URL fetching is required by design, implement a URL allowlist, block private IP ranges, and use a sandboxed fetch proxy. 4. Monitor outbound requests from your API servers.",
     "reference": "https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/"
+  },
+  "IDOR-001": {
+    "id": "IDOR-001",
+    "label": "Broken Object Level Authorization — IDOR",
+    "severity": "HIGH",
+    "confidence": "MEDIUM",
+    "owasp": "API1:2023 - Broken Object Level Authorization",
+    "cwe": "CWE-639",
+    "impact": "Unauthorized access to other users' data — account takeover, data breach, privacy violation.",
+    "description": "The API endpoint does not enforce object-level authorization. A numeric resource ID (found in the URL path or query parameters) can be replaced with adjacent IDs to access resources belonging to other users. The server returns data for the requested ID without verifying that the authenticated user owns or has permission to access that resource.",
+    "solution": "Implement object-level authorization checks on every endpoint that returns user-specific data. Verify that the authenticated user owns or has explicit permission to access the requested resource ID before returning data. Use indirect references (random UUIDs or tokens) instead of sequential numeric IDs for sensitive resources.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/"
+  },
+  "BFLA-001": {
+    "id": "BFLA-001",
+    "label": "Broken Function Level Authorization — HTTP Method Tampering",
+    "severity": "HIGH",
+    "confidence": "MEDIUM",
+    "owasp": "API5:2023 - Broken Function Level Authorization",
+    "cwe": "CWE-285",
+    "impact": "Unauthorized data modification or deletion — a regular user can perform privileged operations (DELETE, PUT, PATCH) that should require elevated privileges.",
+    "description": "The API endpoint accepts HTTP methods (DELETE, PUT, PATCH) from a user-level token that should only be available to administrators or resource owners. The server enforces authorization based on the resource identity but not on the HTTP verb, allowing regular users to perform destructive or privileged operations.",
+    "solution": "Implement function-level authorization checks that validate both the user's identity AND the HTTP method being used. Explicitly allowlist which roles can use each HTTP verb on each endpoint. Return HTTP 403 for any method not permitted for the authenticated user's role. Consider using OPTIONS endpoint to explicitly advertise allowed methods per role.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa5-broken-function-level-authorization/"
+  },
+  "BFLA-002": {
+    "id": "BFLA-002",
+    "label": "Broken Function Level Authorization — Admin Endpoint Exposed",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "owasp": "API5:2023 - Broken Function Level Authorization",
+    "cwe": "CWE-285",
+    "impact": "Full administrative access with user-level credentials — user enumeration, privilege escalation, system configuration exposure.",
+    "description": "An administrative or management endpoint is accessible with a regular user token. Admin endpoints typically expose sensitive operations (user management, configuration, system state) that should be restricted to privileged roles. Exposing these endpoints to regular users violates the principle of least privilege and can lead to complete system compromise.",
+    "solution": "Restrict all administrative endpoints to explicitly privileged roles using role-based access control (RBAC). Apply authorization middleware to all admin routes. Consider hosting admin endpoints on a separate internal network not accessible from the public internet. Audit all /admin, /management, /internal, and /actuator endpoints in production.",
+    "reference": "https://owasp.org/API-Security/editions/2023/en/0xa5-broken-function-level-authorization/"
   }
 }

@@ -42,7 +42,7 @@ VERSION = "1.0"
 # REST tests — passed to RESTScanner
 ALL_REST_TESTS: list[str] = [
     "misconfig", "auth", "sqli", "blind_sqli",
-    "nosql", "xss", "idor", "ssrf",
+    "nosql", "xss", "idor", "ssrf","bfla",
     "mass_assign", "rate_limit","inventory","sensitive"
 ]
 
@@ -559,6 +559,7 @@ def run_scan(
                 cookie       = getattr(args, "cookie",       None),
                 api_key      = getattr(args, "api_key",      None),
                 api_key_name = getattr(args, "api_key_name", "X-API-Key"),
+                second_token = getattr(args, "second_token",  None),
             )
 
         return scanner.scan(endpoints, tests=tests)
@@ -1164,6 +1165,7 @@ def _common_args() -> argparse.ArgumentParser:
                    help="API key value for injection tests")
     p.add_argument("--api-key-name",  type=str, default="X-API-Key", dest="api_key_name",
                    help="API key header name (default: X-API-Key)")
+    p.add_argument("--second-token", help="Second account JWT for IDOR confirmation")
     return p
 
 

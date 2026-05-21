@@ -47,3 +47,54 @@ AttributeError: 'sqlite3.Row' object has no attribute 'get'
 2026-05-13 15:40:04 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
 2026-05-13 15:40:50 [INFO] Scan 11e1201a-bb96-4021-b3e5-05b829132b6e started: http://webservices.oorsprong.org/websamples.countryinfo/CountryInfoService.wso  tests=wsdl
 2026-05-13 15:41:00 [INFO] Scan 11e1201a-bb96-4021-b3e5-05b829132b6e done: 1 findings in 9.8s
+2026-05-15 14:42:46 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-15 14:50:44 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-15 15:04:00 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 11:49:30 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 11:53:27 [ERROR] AI chat error: <urlopen error [WinError 10061] Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée>
+2026-05-18 11:53:50 [ERROR] AI chat error: <urlopen error [WinError 10061] Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée>
+2026-05-18 12:17:20 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 12:24:25 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 12:25:21 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 12:28:59 [ERROR] AI chat error: HTTP Error 403: Forbidden
+2026-05-18 12:37:23 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 12:38:59 [ERROR] AI chat error: HTTP Error 403: Forbidden
+2026-05-18 12:39:59 [ERROR] AI chat error: HTTP Error 403: Forbidden
+2026-05-18 12:43:00 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 12:44:28 [ERROR] AI chat error: HTTP Error 403: Forbidden
+2026-05-18 12:45:42 [ERROR] AI chat error: HTTP Error 403: Forbidden
+2026-05-18 12:56:08 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 12:59:25 [ERROR] AI chat error: Groq API error 404: {"error":{"message":"The model `llama-3.3-70b-versatilegroq_api_key=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` does not exist or you do not have access to it.","type":"invalid_request_e
+2026-05-18 13:00:50 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 13:03:11 [ERROR] AI chat error: Groq API error 400: {"error":{"message":"The model `llama3-8b-8192` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to us
+2026-05-18 13:16:02 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 13:17:09 [ERROR] AI chat error: Groq API error 400: {"error":{"message":"The model `llama3-8b-8192` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to us
+2026-05-18 13:17:57 [ERROR] AI chat error: Groq API error 400: {"error":{"message":"The model `llama3-8b-8192` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to us
+2026-05-18 13:24:17 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 13:30:12 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 13:32:48 [ERROR] AI chat error: Gemini API error 404: {
+  "error": {
+    "code": 404,
+    "message": "models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of av
+2026-05-18 13:34:28 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 13:36:06 [ERROR] AI chat error: Gemini rate limit reached — wait a moment and try again
+2026-05-18 13:39:42 [ERROR] AI chat error: Gemini rate limit reached — wait a moment and try again
+2026-05-18 13:55:18 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 13:57:45 [ERROR] AI chat error: Groq API error 400: {"error":{"message":"The model `llama3-8b-8192` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to us
+2026-05-18 14:00:34 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 15:00:05 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 15:00:20 [ERROR] AI chat error: HTTP Error 404: Not Found
+2026-05-18 15:30:26 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-18 15:31:47 [ERROR] AI chat error: timed out
+2026-05-18 15:55:48 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-19 08:52:08 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-19 08:56:09 [INFO] Scan f8371024-b9da-4a98-a97c-49a6e77ff143 started: https://0a6b002b0370656c835cb41b007900c9.web-security-academy.net/  tests=all
+2026-05-19 08:56:30 [INFO] Scan f8371024-b9da-4a98-a97c-49a6e77ff143 done: 6 findings in 20.6s
+2026-05-19 09:31:29 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-19 10:10:18 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-19 10:11:09 [INFO] Scan 1fdfa8d3-d8b8-4872-9071-78c99cdffff1 started: https://0a0900e70476114d801376ee008a00f3.web-security-academy.net/  tests=all
+2026-05-19 10:11:09 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-19 10:13:38 [INFO] Scan 1fdfa8d3-d8b8-4872-9071-78c99cdffff1 done: 0 findings in 149.8s
+2026-05-19 10:16:32 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-19 10:16:57 [INFO] Scan 8db5fa44-cdd5-4154-8fd8-b22ae0c26163 started: https://0a0900e70476114d801376ee008a00f3.web-security-academy.net/  tests=all
+2026-05-19 10:17:38 [INFO] Scan 8db5fa44-cdd5-4154-8fd8-b22ae0c26163 done: 6 findings in 41.0s

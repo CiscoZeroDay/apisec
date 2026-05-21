@@ -251,7 +251,8 @@ class RESTScanner:
         # "xss":         "_test_xss",
         "ssrf":        "_test_ssrf",
         "sensitive":   "_test_sensitive_data",
-        # "idor":        "_test_idor",
+        "idor":        "_test_idor",
+        "bflaw":       "_test_bfla",
         # "rate_limit":  "_test_rate_limit",
     }
 
@@ -265,6 +266,7 @@ class RESTScanner:
         password:   Optional[str] = None,
         login_body: Optional[str] = None,
         params_map: Optional[dict] = None,
+        second_token: Optional[str] = None,
         deep:       bool = False,
         cookie:       Optional[str] = None,       # ← ajouter
         api_key:      Optional[str] = None,       # ← ajouter
@@ -281,6 +283,7 @@ class RESTScanner:
         self.cookie       = cookie
         self.api_key      = api_key
         self.api_key_name = api_key_name
+        self.second_token = second_token
 
         if token:
             self.token = token
@@ -1344,6 +1347,104 @@ class RESTScanner:
         )
         return engine.scan(self._endpoints)
 
+    # =========================================================================
+    #  [API1] Broken Object Level Authorization — IDOR
+    #  [API5] Broken Function Level Authorization — BFLA
+    #  Both delegated to exploit/idor_rest_engine.py
+    # =========================================================================
+
+    def _test_idor(self, endpoint: str) -> list[ScanResult]:
+        """
+        [API1:2023] Broken Object Level Authorization — IDOR Detection.
+
+        Tests numeric IDs found in URL paths and response bodies by probing
+        adjacent IDs (id-10 to id-1 and id+1 to id+10).
+
+        Detection strategy:
+          Source 1 — Path IDs: numeric segments in the URL path
+            /api/v1/orders/1337 → tests 1327..1336 and 1338..1347
+
+          Source 2 — Body IDs: numeric ID fields in the GET response body
+            {"order_id": 1337} → tests as query param ?order_id=1337±10
+
+        UUID/random IDs: detected but NOT brute-forced — flagged in debug
+        as "secure by design" (128-bit random IDs are not guessable).
+
+        Confidence:
+          HIGH   : Two tokens provided via --second-token — confirms data
+                   belongs to a different user account
+          MEDIUM : Single token — different data returned but ownership
+                   not independently confirmed
+
+        Vulnerability reported:
+          IDOR-001 HIGH — different data returned for adjacent ID
+
+        Global check — runs once per scan via guard, parallel execution
+        via ThreadPoolExecutor in idor_rest_engine.py.
+        """
+        if getattr(self, "_idor_done", False):
+            return []
+        self._idor_done = True
+
+        from exploit.idor_rest_engine import IDORRestEngine
+
+        engine = IDORRestEngine(
+            base_url     = self.base_url,
+            timeout      = self.http.timeout,
+            token        = self.token,
+            second_token = getattr(self, "second_token", None),
+            cookie       = self.cookie,
+            api_key      = self.api_key,
+            api_key_name = self.api_key_name,
+        )
+        return engine.scan_idor(self._endpoints)
+
+    def _test_bfla(self, endpoint: str) -> list[ScanResult]:
+        """
+        [API5:2023] Broken Function Level Authorization — BFLA Detection.
+
+        Two detection vectors:
+
+          Vector 1 — HTTP Method Tampering (per endpoint):
+            Tests DELETE, PUT, PATCH with user token on every endpoint.
+            If server returns 200/201/204 → BFLA-001 HIGH/MEDIUM.
+
+          Vector 2 — Admin Endpoint Discovery (once per scan):
+            Tests 20+ common admin path patterns with user token:
+            /admin, /admin/users, /management, /internal, /actuator/env...
+            If server returns 200 with data → BFLA-002 CRITICAL.
+
+        Severity:
+          CRITICAL : Admin endpoint accessible (BFLA-002)
+          HIGH     : DELETE method returns 200 with user token (BFLA-001)
+          MEDIUM   : PUT/PATCH returns 200 with user token (BFLA-001)
+
+        Note: confidence is MEDIUM for method tampering — a 200 response
+        does not always confirm unauthorized access (some endpoints are
+        intentionally permissive). Manual verification recommended.
+
+        Global check — runs once per scan via guard.
+        """
+        if getattr(self, "_bfla_done", False):
+            return []
+        self._bfla_done = True
+
+        from exploit.idor_rest_engine import IDORRestEngine
+
+        engine = IDORRestEngine(
+            base_url     = self.base_url,
+            timeout      = self.http.timeout,
+            token        = self.token,
+            second_token = getattr(self, "second_token", None),
+            cookie       = self.cookie,
+            api_key      = self.api_key,
+            api_key_name = self.api_key_name,
+        )
+
+        findings: list[ScanResult] = []
+        findings += engine.scan_bfla(self._endpoints)
+        findings += engine.scan_admin_endpoints()
+        return findings
     
     def _deduplicate(self, findings: list[ScanResult]) -> list[ScanResult]:
         """
