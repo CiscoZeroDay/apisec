@@ -98,3 +98,6 @@ AttributeError: 'sqlite3.Row' object has no attribute 'get'
 2026-05-19 10:16:32 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
 2026-05-19 10:16:57 [INFO] Scan 8db5fa44-cdd5-4154-8fd8-b22ae0c26163 started: https://0a0900e70476114d801376ee008a00f3.web-security-academy.net/  tests=all
 2026-05-19 10:17:38 [INFO] Scan 8db5fa44-cdd5-4154-8fd8-b22ae0c26163 done: 6 findings in 41.0s
+2026-05-22 16:30:18 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-24 12:05:31 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-24 16:03:36 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db

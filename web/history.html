@@ -9,6 +9,7 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>"/>
 </head>
 <body>
+<canvas id="network-canvas" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;"></canvas>
 
 <!-- ── BACKGROUND ─────────────────────────────────────────────────── -->
 <div class="bg-layer" aria-hidden="true">
@@ -34,7 +35,8 @@
       <div class="status-dot" title="Serveur actif"></div>
     </div>
 
-    <nav class="nav" aria-label="Navigation principale">
+    <button class="theme-toggle" id="theme-toggle-btn" title="Toggle light/dark mode">🌙</button>
+        <nav class="nav" aria-label="Navigation principale">
       <a href="/"        class="nav-link">Scanner</a>
       <a href="/history" class="nav-link active" aria-current="page">Historique</a>
       <a href="https://github.com/CiscoZeroDay/apisec" target="_blank"
@@ -179,5 +181,103 @@
 </div>
 
 <script src="/static/app.js"></script>
+<script>
+(function() {
+  const btn  = document.getElementById('theme-toggle-btn');
+  const body = document.body;
+  const saved = localStorage.getItem('apisec-theme') || 'dark';
+  if (saved === 'light') {
+    body.classList.add('light-mode');
+    if (btn) btn.textContent = '☀️';
+  }
+  if (btn) {
+    btn.addEventListener('click', () => {
+      const isLight = body.classList.toggle('light-mode');
+      btn.textContent = isLight ? '☀️' : '🌙';
+      localStorage.setItem('apisec-theme', isLight ? 'light' : 'dark');
+    });
+  }
+})();
+</script>
+<script>
+// ── Animated Network Background ──────────────────────────────────────────
+(function() {
+  const canvas = document.getElementById('network-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  let W, H, nodes;
+
+  const NODE_COUNT = 70;
+  const MAX_DIST   = 130;
+
+  function getColors() {
+    const isLight = document.body.classList.contains('light-mode');
+    return {
+      node: isLight ? 'rgba(37,99,235,0.55)'  : 'rgba(255,255,255,0.55)',
+      edge: isLight ? 'rgba(37,99,235,ALPHA)'  : 'rgba(255,255,255,ALPHA)',
+    };
+  }
+
+  function resize() {
+    W = canvas.width  = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+
+  function initNodes() {
+    nodes = Array.from({length: NODE_COUNT}, () => ({
+      x:  Math.random() * W,
+      y:  Math.random() * H,
+      vx: (Math.random() - .5) * .45,
+      vy: (Math.random() - .5) * .45,
+      r:  Math.random() * 1.8 + 1.2,
+    }));
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    const col = getColors();
+
+    // Update positions
+    for (const n of nodes) {
+      n.x += n.vx; n.y += n.vy;
+      if (n.x < 0 || n.x > W) n.vx *= -1;
+      if (n.y < 0 || n.y > H) n.vy *= -1;
+    }
+
+    // Draw edges
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx   = nodes[i].x - nodes[j].x;
+        const dy   = nodes[i].y - nodes[j].y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < MAX_DIST) {
+          const alpha = ((1 - dist / MAX_DIST) * 0.25).toFixed(3);
+          ctx.beginPath();
+          ctx.strokeStyle = col.edge.replace('ALPHA', alpha);
+          ctx.lineWidth   = 0.7;
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw nodes
+    ctx.fillStyle = col.node;
+    for (const n of nodes) {
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', () => { resize(); initNodes(); });
+  resize();
+  initNodes();
+  draw();
+})();
+</script>
 </body>
 </html>
