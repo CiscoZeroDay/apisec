@@ -252,7 +252,7 @@ class RESTScanner:
         "sensitive":   "_test_sensitive_data",
         "idor":        "_test_idor",
         "bflaw":       "_test_bfla",
-        "rate_limit":  "_test_rate_limit",
+        #"rate_limit":  "_test_rate_limit",
     }
 
     def __init__(
