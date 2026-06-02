@@ -30,8 +30,6 @@ Schema sources (priority order):
   2. AVAILABLE_FROM_SCAN         : live introspection during scan
   3. AVAILABLE_FROM_BYPASS       : bypass technique (GET/newline/fragment)
   4. AVAILABLE_FROM_CLAIRVOYANCE : reconstructed via field suggestions
-                                   (clairvoyance — last resort when
-                                   introspection is fully disabled)
 
 Tests implemented  : GQL-S1 S2 S3 S4 S5 S6 S9 S10 S11 S13  (10/13)
 Tests planned      : GQL-S7 (sqli) S8 (nosqli) S12 (subscription)
@@ -105,8 +103,7 @@ BYPASS_FRAGMENT_PROBE = (
 
 CSRF_SAFE_PROBE = "{ __typename }"
 
-# Clairvoyance timeout — schema reconstruction takes time
-_CLAIRVOYANCE_TIMEOUT = 300   # 5 minutes
+_CLAIRVOYANCE_TIMEOUT = 300   # 5 minutes max for schema reconstruction
 
 
 # -----------------------------------------------------------------------------
@@ -144,6 +141,9 @@ _SENSITIVE_FIELDS_FALLBACK: list[str] = [
     "private", "master", "admin", "root",
 ]
 
+# SENSITIVE_FIELDS — static schema analysis only (no HTTP requests).
+# Loading 10k words is fine here — it is a keyword comparison against
+# field names already retrieved from the schema. Zero HTTP requests.
 SENSITIVE_FIELDS: list[str] = _load_wordlist(
     "fieldWordlist-10k.txt",
     _SENSITIVE_FIELDS_FALLBACK,
@@ -158,10 +158,21 @@ _DANGEROUS_MUTATIONS_FALLBACK: list[str] = [
     "updatePassword", "createUser", "destroyAccount",
 ]
 
-DANGEROUS_MUTATIONS: list[str] = _load_wordlist(
-    "mutationFieldWordlist-10k.txt",
-    _DANGEROUS_MUTATIONS_FALLBACK,
-)
+# DANGEROUS_MUTATIONS — fallback for GQL-S4 when schema is unavailable.
+#
+# Design decision: intentionally NOT loaded from the 10k wordlist.
+#
+# GQL-S4 logic:
+#   - Schema available (introspection or bypass succeeded):
+#       → uses real mutation names from schema → this list is NEVER used
+#   - Schema unavailable (all bypasses + clairvoyance failed):
+#       → uses this list as fallback → ~22 targeted entries = ~22 HTTP requests
+#
+# Loading mutationFieldWordlist-10k.txt here would fire 10 000 HTTP requests
+# even when the schema is available — defeating the entire purpose of
+# schema-driven scanning. The 10k wordlist is reserved for Clairvoyance
+# (passed as a subprocess argument, not iterated as HTTP probes).
+DANGEROUS_MUTATIONS: list[str] = _DANGEROUS_MUTATIONS_FALLBACK
 
 ERROR_LEAK_SIGNALS: list[tuple[str, str]] = [
     ("Traceback",                     "Python stack trace"),
@@ -218,16 +229,15 @@ class SchemaStatus(Enum):
     AVAILABLE_FROM_DISCOVERY    = auto()
     AVAILABLE_FROM_SCAN         = auto()
     AVAILABLE_FROM_BYPASS       = auto()
-    AVAILABLE_FROM_CLAIRVOYANCE = auto()   # reconstructed via field suggestions
+    AVAILABLE_FROM_CLAIRVOYANCE = auto()
     BLOCKED                     = auto()
     UNKNOWN                     = auto()
 
 
 @dataclass
 class SchemaState:
-    """
-    Tracks schema availability across all test methods in a scan session.
-    """
+    """Tracks schema availability across all test methods in a scan session."""
+
     status:     SchemaStatus = SchemaStatus.UNKNOWN
     raw:        Optional[dict] = None
     gql_schema: Optional[dict] = None
@@ -336,22 +346,20 @@ def _vuln(
     payload:    Optional[str] = None,
     parameter:  Optional[str] = None,
     extra_desc: Optional[str] = None,
-    confidence: Optional[str] = None,   # override vulnDB default when needed
+    confidence: Optional[str] = None,
 ) -> ScanResult:
     """
     Build a fully-populated ScanResult from the knowledge base.
 
     Args:
-        name       : Key in graphql_vulns.json (e.g. "fields", "bypass")
+        name       : Key in graphql_vulns.json
         endpoint   : Full endpoint URL
         method     : HTTP method used
-        evidence   : Runtime evidence string (what was observed)
-        payload    : Payload that triggered the finding (optional)
-        parameter  : Affected parameter name (optional)
-        extra_desc : Additional context appended to the static description
-        confidence : Override the vulnDB confidence level.
-                     Use "MEDIUM" when results come from Clairvoyance
-                     (schema reconstruction may be incomplete).
+        evidence   : Runtime evidence (what was observed)
+        payload    : Payload that triggered the finding
+        parameter  : Affected parameter name
+        extra_desc : Additional context appended to description
+        confidence : Override vulnDB confidence (use "MEDIUM" for Clairvoyance)
     """
     meta        = _vulndb.get(name)
     description = meta.get("description", f"Vulnerability detected: {name}")
@@ -387,7 +395,7 @@ class GraphQLScanner:
     Tests GraphQL endpoints for security vulnerabilities.
 
     Includes Clairvoyance integration for schema reconstruction when
-    introspection is disabled — a common production hardening measure.
+    introspection is disabled.
     """
 
     _TEST_REGISTRY: dict[str, str] = {
@@ -506,8 +514,7 @@ class GraphQLScanner:
             self._schema_state.status = SchemaStatus.BLOCKED
             logger.info(
                 f"    [INFO] GQL-S1 — introspection disabled on {endpoint}. "
-                "GQL-S2 bypass will be attempted next. "
-                "Clairvoyance will run as last resort if all bypasses fail."
+                "GQL-S2 bypass will be attempted next."
             )
             return []
 
@@ -541,11 +548,6 @@ class GraphQLScanner:
           2. Newline injection   — bypasses naive string matching
           3. Fragment spreading  — bypasses keyword-based WAF rules
           4. Clairvoyance        — field suggestion enumeration (last resort)
-
-        Clairvoyance works by sending queries with random field names and
-        analyzing "Did you mean X?" suggestions to reconstruct the schema.
-        This is the standard pentest technique for production GraphQL APIs
-        where introspection is disabled.
         """
         if self._schema_state.available:
             logger.debug(
@@ -555,10 +557,7 @@ class GraphQLScanner:
             return []
 
         if self._schema_state.status == SchemaStatus.UNKNOWN:
-            logger.debug(
-                "[GQL-S2] Skipped — introspection status unknown. "
-                "Run GQL-S1 first."
-            )
+            logger.debug("[GQL-S2] Skipped — run GQL-S1 first.")
             return []
 
         path = self._to_path(endpoint)
@@ -598,7 +597,7 @@ class GraphQLScanner:
                 extra_desc = f"Bypass technique: {technique}.",
             )]
 
-        # ── All traditional bypasses failed — try Clairvoyance ───────────────
+        # All traditional bypasses failed — try Clairvoyance
         if self._run_clairvoyance(endpoint):
             real_types = [
                 t for t in self._schema_state.get_types()
@@ -614,20 +613,19 @@ class GraphQLScanner:
                 method     = "POST",
                 payload    = "clairvoyance field-suggestion enumeration",
                 evidence   = (
-                    f"Schema reconstructed without introspection using clairvoyance "
-                    f"— {len(real_types)} types discovered via field suggestions. "
-                    "Introspection is disabled but field suggestions expose the schema."
+                    f"Schema reconstructed without introspection — "
+                    f"{len(real_types)} types discovered via field suggestions."
                 ),
                 extra_desc = (
-                    "Clairvoyance exploits GraphQL 'Did you mean X?' error messages "
-                    "to reconstruct the full schema without introspection access. "
-                    "Disable field suggestions in production to prevent this."
+                    "Clairvoyance exploits 'Did you mean X?' error messages "
+                    "to reconstruct the schema. "
+                    "Disable field suggestions in production."
                 ),
             )]
 
         logger.info(
             f"    [INFO] GQL-S2 — all bypass techniques and clairvoyance failed "
-            f"on {endpoint}. Schema-dependent tests (GQL-S3) will be skipped."
+            f"on {endpoint}. Schema-dependent tests will be skipped."
         )
         return []
 
@@ -676,15 +674,12 @@ class GraphQLScanner:
         if not found:
             return []
 
-        # Clairvoyance schemas may be incomplete — lower confidence
         is_clairvoyance = (
             self._schema_state.status == SchemaStatus.AVAILABLE_FROM_CLAIRVOYANCE
         )
         confidence = "MEDIUM" if is_clairvoyance else "HIGH"
-
         clairvoyance_note = (
-            " ⚠ Schema generated by Clairvoyance (introspection disabled) — "
-            "manual verification required. Some fields may be inaccurate or incomplete."
+            " ⚠ Schema from Clairvoyance — manual verification required."
             if is_clairvoyance else ""
         )
 
@@ -719,8 +714,21 @@ class GraphQLScanner:
     # =========================================================================
 
     def _test_broken_auth(self, endpoint: str) -> list[ScanResult]:
-        path          = self._to_path(endpoint)
-        schema_muts   = self._schema_state.get_mutation_names()
+        """
+        Test dangerous mutations without an auth token.
+
+        Flow:
+          1. Schema available → use real mutation names from schema
+             (exact names — no guessing, no wordlist)
+          2. Schema unavailable → use DANGEROUS_MUTATIONS (~22 hardcoded names)
+
+        The 10k mutationFieldWordlist is NOT used here.
+        It would fire 10 000 HTTP requests even when schema is available.
+        When schema is available (the common case after GQL-S1/S2), the
+        hardcoded fallback is never reached.
+        """
+        path           = self._to_path(endpoint)
+        schema_muts    = self._schema_state.get_mutation_names()
         using_fallback = False
 
         if schema_muts:
@@ -732,7 +740,8 @@ class GraphQLScanner:
             if self._schema_state.status == SchemaStatus.BLOCKED:
                 logger.info(
                     f"    [INFO] GQL-S4 Broken Auth — schema unavailable. "
-                    f"Testing {len(mutations)} hardcoded mutation names."
+                    f"Testing {len(mutations)} hardcoded mutation names. "
+                    "Results may miss non-standard mutation names."
                 )
 
         saved_auth = self.http._session.headers.get("Authorization")
@@ -752,7 +761,7 @@ class GraphQLScanner:
 
                 body_lower = (r.text or "").lower()
 
-                is_auth_error    = (
+                is_auth_error = (
                     r.status_code in (401, 403)
                     or any(s in body_lower for s in AUTH_ERROR_SIGNALS)
                 )
@@ -764,15 +773,13 @@ class GraphQLScanner:
                 if not is_auth_error and not is_field_missing:
                     source = " (hardcoded)" if using_fallback else " (from schema)"
 
-                    # Clairvoyance-derived schema — lower confidence
                     is_clairvoyance = (
                         self._schema_state.status ==
                         SchemaStatus.AVAILABLE_FROM_CLAIRVOYANCE
                     )
                     confidence = "MEDIUM" if is_clairvoyance else "HIGH"
                     clairvoyance_note = (
-                        " ⚠ Schema generated by Clairvoyance (introspection disabled)"
-                        " — manual verification required."
+                        " ⚠ Schema from Clairvoyance — manual verification required."
                         if is_clairvoyance else ""
                     )
 
@@ -793,12 +800,12 @@ class GraphQLScanner:
                             + (f" | {clairvoyance_note}" if clairvoyance_note else "")
                         ),
                         extra_desc = (
-                            f"Mutation '{mutation_name}' is accessible without auth. "
+                            f"Mutation '{mutation_name}' accessible without auth. "
                             f"Schema source: {self._schema_state.source_label}."
                             + clairvoyance_note
                         ),
                     ))
-                    break
+                    break  # one confirmed finding per endpoint is enough
         finally:
             if saved_auth:
                 self.http._session.headers["Authorization"] = saved_auth
@@ -1083,35 +1090,18 @@ class GraphQLScanner:
 
     @staticmethod
     def _check_clairvoyance() -> bool:
-        """Check if clairvoyance is installed and accessible."""
         return bool(shutil.which("clairvoyance"))
 
     def _run_clairvoyance(self, endpoint: str) -> bool:
         """
-        Run clairvoyance to reconstruct GraphQL schema without introspection.
+        Run clairvoyance to reconstruct the GraphQL schema without introspection.
 
-        Clairvoyance works by:
-          1. Sending queries with random/wordlist field names
-          2. Analyzing "Did you mean X?" field suggestions in error responses
-          3. Building the schema iteratively from those suggestions
+        The fieldWordlist-10k.txt is passed to the clairvoyance subprocess
+        as its wordlist argument — it is NOT iterated as HTTP probes by APISec.
+        Clairvoyance handles the enumeration internally.
 
-        This is the standard pentest technique for production GraphQL APIs
-        where introspection is disabled — a common hardening measure.
-
-        Note: Requires field suggestions to be enabled on the server.
-        If the server disables both introspection AND field suggestions,
-        schema reconstruction is not possible without access to source code.
-
-        Args:
-            endpoint : Full GraphQL endpoint URL
-
-        Returns:
-            True if schema was successfully reconstructed, False otherwise.
-
-        Side effect:
-            Updates self._schema_state on success:
-              status = AVAILABLE_FROM_CLAIRVOYANCE
-              raw    = reconstructed schema dict
+        Returns True if schema was successfully reconstructed.
+        Updates self._schema_state on success.
         """
         if not self._check_clairvoyance():
             logger.debug(
@@ -1128,42 +1118,31 @@ class GraphQLScanner:
         output_path: Optional[str] = None
 
         try:
-            # Create temp file for clairvoyance output
             with tempfile.NamedTemporaryFile(
-                mode    = 'w',
-                suffix  = '.json',
-                delete  = False,
-                prefix  = 'apisec_clairvoyance_',
+                mode   = "w",
+                suffix = ".json",
+                delete = False,
+                prefix = "apisec_clairvoyance_",
             ) as tmp:
                 output_path = tmp.name
 
-            # Build command
             cmd = [
                 "clairvoyance",
                 endpoint,
                 "-o", output_path,
-                "-c", "5",    # concurrent requests — balanced
-                "-k",         # disable SSL verification (matches our requester)
-                "-p", "slow", # slow profile — avoids rate limiting
+                "-c", "5",
+                "-k",
+                "-p", "slow",
             ]
 
-            # Add wordlist if available
             if os.path.isfile(_FIELD_WL):
                 cmd.extend(["-w", _FIELD_WL])
-                logger.debug(
-                    f"    [gql] clairvoyance using wordlist: {_FIELD_WL}"
-                )
+                logger.debug(f"    [gql] clairvoyance wordlist: {_FIELD_WL}")
 
-            # Add authentication header if token present
             auth_header = self.http._session.headers.get("Authorization")
             if auth_header:
                 cmd.extend(["-H", f"Authorization: {auth_header}"])
 
-            logger.debug(
-                f"    [gql] clairvoyance cmd: {' '.join(cmd[:8])}..."
-            )
-
-            # Run clairvoyance
             result = subprocess.run(
                 cmd,
                 capture_output = True,
@@ -1173,12 +1152,10 @@ class GraphQLScanner:
                 errors         = "replace",
             )
 
-            # Log stderr for debugging
             if result.stderr and result.stderr.strip():
                 for line in result.stderr.strip().splitlines()[:5]:
                     logger.debug(f"    [gql] clairvoyance: {line.strip()}")
 
-            # Validate output file
             if not output_path or not os.path.isfile(output_path):
                 logger.debug("    [gql] clairvoyance produced no output file")
                 return False
@@ -1187,19 +1164,16 @@ class GraphQLScanner:
                 content = f.read().strip()
 
             if not content:
-                logger.debug("    [gql] clairvoyance output file is empty")
+                logger.debug("    [gql] clairvoyance output is empty")
                 return False
 
             schema_json = json.loads(content)
-
-            # Validate schema has meaningful content
-            all_types = (
-                schema_json
-                .get("data", {})
-                .get("__schema", {})
-                .get("types", [])
+            all_types   = (
+                schema_json.get("data", {})
+                           .get("__schema", {})
+                           .get("types", [])
             )
-            real_types = [
+            real_types  = [
                 t for t in all_types
                 if t.get("name") and not t["name"].startswith("__")
             ]
@@ -1211,14 +1185,12 @@ class GraphQLScanner:
                 )
                 return False
 
-            # Success — update SchemaState
             self._schema_state.raw    = schema_json
             self._schema_state.status = SchemaStatus.AVAILABLE_FROM_CLAIRVOYANCE
 
             logger.info(
                 f"    [gql] clairvoyance SUCCESS — "
-                f"{len(real_types)} types reconstructed without introspection "
-                f"-> {endpoint}"
+                f"{len(real_types)} types reconstructed -> {endpoint}"
             )
             return True
 
@@ -1242,7 +1214,6 @@ class GraphQLScanner:
             return False
 
         finally:
-            # Always clean up temp file
             if output_path:
                 try:
                     if os.path.isfile(output_path):
