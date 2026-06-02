@@ -6,16 +6,14 @@ Converts a GraphQL schema (stored in endpoints.json after discovery) into
 formats ready to paste into visual tools without any extra manipulation:
 
   - Voyager JSON  : introspection payload accepted by GraphQL Voyager
-                    (graphql-kit.com/graphql-voyager → Change Schema → Introspection)
-  - SDL           : Schema Definition Language accepted by GraphQL Voyager (SDL tab),
-                    Nathan Randal's visualizer, and most GraphQL IDEs
+  - Nathan JSON   : introspection payload for Nathan Randal visualizer
+  - SDL           : Schema Definition Language
 
-Usage (programmatic):
-    exporter = GraphQLSchemaExporter(schema_dict)
-    exporter.export(output_dir=".", fmt="both")
-
-Usage (CLI):
-    apisec schema --input endpoints.json --format both --output-dir ./schema_export
+Fixes applied:
+  1. _export_nathan() strips directives — Nathan Randal rejects them
+  2. _normalize_type_names() capitalizes query/mutation type names
+     Some servers return "query"/"mutation" (lowercase) which breaks
+     Voyager and Nathan Randal — both expect "Query"/"Mutation"
 """
 
 from __future__ import annotations
@@ -36,9 +34,9 @@ from logger.logger import logger
 class ExportResult:
     """Holds the paths of generated export files."""
 
-    voyager_path: Optional[str] = None   # {"data": {"__schema": ...}} for GraphQL Voyager
-    nathan_path:  Optional[str] = None   # {"__schema": ...} for Nathan Randal
-    sdl_path:     Optional[str] = None   # SDL .graphql file
+    voyager_path: Optional[str] = None
+    nathan_path:  Optional[str] = None
+    sdl_path:     Optional[str] = None
     fmt:          str           = "both"
 
     @property
@@ -76,9 +74,6 @@ class GraphQLSchemaExporter:
     """
     Converts a schema dict (from endpoints.json → schema) into
     Voyager-ready JSON and/or SDL.
-
-    Args:
-        schema_dict : the 'schema' value from endpoints.json
     """
 
     def __init__(self, schema_dict: dict) -> None:
@@ -95,16 +90,6 @@ class GraphQLSchemaExporter:
         output_dir: str = ".",
         fmt:        str = "both",
     ) -> ExportResult:
-        """
-        Generate export files.
-
-        Args:
-            output_dir : directory where files are written
-            fmt        : "voyager" | "sdl" | "both"
-
-        Returns:
-            ExportResult with paths of generated files
-        """
         os.makedirs(output_dir, exist_ok=True)
         result = ExportResult(fmt=fmt)
 
@@ -125,35 +110,92 @@ class GraphQLSchemaExporter:
         return result
 
     # -------------------------------------------------------------------------
+    #  Fix 1 — Normalize type names
+    # -------------------------------------------------------------------------
+
+    def _normalize_schema(self, schema_obj: dict) -> dict:
+        """
+        Normalize a __schema object for compatibility with Voyager and Nathan Randal.
+
+        Problems fixed:
+          1. Some servers return queryType.name = "query" (lowercase).
+             Voyager and Nathan Randal expect "Query" (PascalCase).
+             Same for mutationType → "Mutation", subscriptionType → "Subscription".
+
+          2. The type definitions themselves may also use lowercase names.
+             We rename them to match the normalized type references.
+
+        Returns a normalized copy — does not mutate the original.
+        """
+        import copy
+        schema = copy.deepcopy(schema_obj)
+
+        # Build a rename map: lowercase → PascalCase
+        rename_map: dict[str, str] = {}
+
+        for key, pascal in [
+            ("queryType",        "Query"),
+            ("mutationType",     "Mutation"),
+            ("subscriptionType", "Subscription"),
+        ]:
+            type_ref = schema.get(key)
+            if isinstance(type_ref, dict) and type_ref.get("name"):
+                original = type_ref["name"]
+                if original and original != pascal and original.lower() == pascal.lower():
+                    rename_map[original] = pascal
+                    schema[key]["name"]  = pascal
+                    logger.debug(
+                        f"[export] Normalized {key}.name: "
+                        f"'{original}' → '{pascal}'"
+                    )
+
+        # Rename matching types in the types list
+        if rename_map:
+            for t in schema.get("types", []):
+                if isinstance(t, dict) and t.get("name") in rename_map:
+                    t["name"] = rename_map[t["name"]]
+
+        return schema
+
+    # -------------------------------------------------------------------------
+    #  Fix 2 — Strip directives for Nathan Randal
+    # -------------------------------------------------------------------------
+
+    def _strip_directives(self, schema_obj: dict) -> dict:
+        """
+        Remove the 'directives' key from a __schema object.
+
+        Nathan Randal's visualizer does not handle the directives array and
+        throws a JSON.parse error when it is present. Directives are not
+        needed for visualization — they are internal GraphQL machinery.
+
+        Returns a shallow copy with 'directives' removed.
+        """
+        return {k: v for k, v in schema_obj.items() if k != "directives"}
+
+    # -------------------------------------------------------------------------
     #  Voyager JSON export
     # -------------------------------------------------------------------------
 
     def _export_voyager(self, output_dir: str) -> Optional[str]:
         """
-        Write the introspection payload in the exact format GraphQL Voyager expects.
-
-        Voyager expects the raw introspection response:
-            { "data": { "__schema": { ... } } }
-
-        If raw_introspection is available (from fetch), use it directly.
-        Otherwise, reconstruct a minimal introspection from the parsed schema.
+        Write the introspection payload for GraphQL Voyager.
+        Format: {"data": {"__schema": {...}}}
+        Applies type name normalization.
         """
         raw = self._schema.get("raw_introspection")
 
         if raw and isinstance(raw, dict) and "data" in raw:
-            # Perfect — use the original introspection response as-is
-            payload = raw
-            logger.debug("[export] Voyager: using original raw_introspection")
-
+            schema_obj = raw["data"].get("__schema", {})
         elif raw and isinstance(raw, dict) and "__schema" in raw:
-            # Wrap in data envelope if missing
-            payload = {"data": raw}
-            logger.debug("[export] Voyager: wrapping __schema in data envelope")
-
+            schema_obj = raw["__schema"]
         else:
-            # Reconstruct from parsed schema fields
-            logger.debug("[export] Voyager: reconstructing introspection from parsed schema")
-            payload = self._reconstruct_introspection()
+            reconstructed = self._reconstruct_introspection()
+            schema_obj = reconstructed.get("data", {}).get("__schema", {})
+
+        # Apply normalization
+        schema_obj = self._normalize_schema(schema_obj)
+        payload    = {"data": {"__schema": schema_obj}}
 
         path = os.path.join(output_dir, "schema_voyager.json")
         try:
@@ -165,113 +207,37 @@ class GraphQLSchemaExporter:
             logger.error(f"[export] Cannot write {path}: {e}")
             return None
 
-    def _reconstruct_introspection(self) -> dict:
-        """
-        Build a minimal introspection payload from the parsed schema fields.
-        Used as fallback when raw_introspection is not available (oracle method).
-        """
-        queries   = self._schema.get("queries",   [])
-        mutations = self._schema.get("mutations", [])
-        types     = self._schema.get("types",     [])
-
-        # Build Query type fields
-        query_fields = [
-            {
-                "name": q["name"],
-                "args": [{"name": a} for a in q.get("args", [])],
-                "isDeprecated": False,
-                "deprecationReason": None,
-            }
-            for q in queries
-        ]
-
-        # Build Mutation type fields
-        mutation_fields = [
-            {
-                "name": m["name"],
-                "args": [{"name": a} for a in m.get("args", [])],
-                "isDeprecated": False,
-                "deprecationReason": None,
-            }
-            for m in mutations
-        ]
-
-        # Build types list
-        all_types = []
-
-        if query_fields:
-            all_types.append({
-                "kind":   "OBJECT",
-                "name":   "Query",
-                "fields": query_fields,
-                "inputFields":   None,
-                "interfaces":    [],
-                "enumValues":    None,
-                "possibleTypes": None,
-            })
-
-        if mutation_fields:
-            all_types.append({
-                "kind":   "OBJECT",
-                "name":   "Mutation",
-                "fields": mutation_fields,
-                "inputFields":   None,
-                "interfaces":    [],
-                "enumValues":    None,
-                "possibleTypes": None,
-            })
-
-        # Add known scalar types
-        for type_name in types:
-            if type_name not in ("Query", "Mutation") and not type_name.startswith("__"):
-                all_types.append({
-                    "kind":          "OBJECT",
-                    "name":          type_name,
-                    "fields":        [],
-                    "inputFields":   None,
-                    "interfaces":    [],
-                    "enumValues":    None,
-                    "possibleTypes": None,
-                })
-
-        return {
-            "data": {
-                "__schema": {
-                    "queryType":        {"name": "Query"}    if query_fields    else None,
-                    "mutationType":     {"name": "Mutation"} if mutation_fields else None,
-                    "subscriptionType": None,
-                    "types":            all_types,
-                    "directives":       [],
-                }
-            }
-        }
-
     # -------------------------------------------------------------------------
     #  Nathan Randal export
     # -------------------------------------------------------------------------
 
     def _export_nathan(self, output_dir: str) -> Optional[str]:
         """
-        Write the introspection payload in the exact format Nathan Randal expects.
+        Write the introspection payload for Nathan Randal visualizer.
+        Format: {"__schema": {...}}
 
-        Nathan Randal visualizer (nathanrandal.com/graphql-visualizer) expects
-        the __schema object directly — without the "data" envelope:
-            { "__schema": { ... } }
+        Fixes applied:
+          - Strips 'directives' (Nathan Randal rejects them → JSON.parse error)
+          - Normalizes type names (query → Query, mutation → Mutation)
         """
         raw = self._schema.get("raw_introspection")
 
         if raw and isinstance(raw, dict) and "data" in raw:
-            # Strip the "data" wrapper — Nathan wants {"__schema": ...} directly
-            schema_obj = raw["data"].get("__schema")
+            schema_obj = raw["data"].get("__schema", {})
         elif raw and isinstance(raw, dict) and "__schema" in raw:
             schema_obj = raw["__schema"]
         else:
-            # Reconstruct and unwrap
             reconstructed = self._reconstruct_introspection()
-            schema_obj = reconstructed.get("data", {}).get("__schema")
+            schema_obj = reconstructed.get("data", {}).get("__schema", {})
 
         if not schema_obj:
             return None
+
+        # Fix 1 — normalize type names (query → Query, mutation → Mutation)
+        schema_obj = self._normalize_schema(schema_obj)
+
+        # Fix 2 — strip directives (Nathan Randal rejects them)
+        schema_obj = self._strip_directives(schema_obj)
 
         payload = {"__schema": schema_obj}
 
@@ -279,8 +245,10 @@ class GraphQLSchemaExporter:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
+            logger.info(f"[export] Nathan JSON → {path}")
             return path
         except OSError as e:
+            logger.error(f"[export] Cannot write {path}: {e}")
             return None
 
     # -------------------------------------------------------------------------
@@ -288,14 +256,6 @@ class GraphQLSchemaExporter:
     # -------------------------------------------------------------------------
 
     def _export_sdl(self, output_dir: str) -> Optional[str]:
-        """
-        Generate a Schema Definition Language (.graphql) file.
-
-        SDL is human-readable and accepted by:
-          - GraphQL Voyager (SDL tab)
-          - Nathan Randal's visualizer
-          - GraphQL Playground / Insomnia / Postman
-        """
         sdl = self._build_sdl()
         if not sdl.strip():
             logger.warning("[export] SDL: empty schema — nothing to export")
@@ -312,22 +272,12 @@ class GraphQLSchemaExporter:
             return None
 
     def _build_sdl(self) -> str:
-        """
-        Build SDL from the parsed schema.
-
-        Priority:
-          1. Build from raw_introspection types (most complete)
-          2. Fall back to parsed queries/mutations/types
-        """
         raw = self._schema.get("raw_introspection")
-
         if raw:
             return self._sdl_from_introspection(raw)
-
         return self._sdl_from_parsed()
 
     def _sdl_from_introspection(self, raw: dict) -> str:
-        """Convert raw introspection response to SDL."""
         lines: list[str] = [
             "# GraphQL Schema — generated by APISec",
             "# Source: introspection",
@@ -341,7 +291,6 @@ class GraphQLSchemaExporter:
         )
         all_types = schema_data.get("types", [])
 
-        # Skip built-in introspection types
         skip_prefixes = ("__",)
         skip_scalars  = {"String", "Int", "Float", "Boolean", "ID"}
 
@@ -354,8 +303,8 @@ class GraphQLSchemaExporter:
             if name in skip_scalars:
                 continue
 
-            fields  = t.get("fields") or []
-            ev      = t.get("enumValues") or []
+            fields = t.get("fields") or []
+            ev     = t.get("enumValues") or []
 
             if kind == "OBJECT" and fields:
                 lines.append(f"type {name} {{")
@@ -409,10 +358,6 @@ class GraphQLSchemaExporter:
         return "\n".join(lines)
 
     def _sdl_from_parsed(self) -> str:
-        """
-        Build a minimal SDL from the parsed schema fields.
-        Used when raw_introspection is not available (oracle method).
-        """
         queries   = self._schema.get("queries",   [])
         mutations = self._schema.get("mutations", [])
         types     = self._schema.get("types",     [])
@@ -447,7 +392,6 @@ class GraphQLSchemaExporter:
             lines.append("}")
             lines.append("")
 
-        # Known types (no field details in oracle mode)
         skip = {"Query", "Mutation", "Boolean", "Int", "String", "Float", "ID"}
         for t in types:
             if t not in skip and not t.startswith("__"):
@@ -459,14 +403,86 @@ class GraphQLSchemaExporter:
         return "\n".join(lines)
 
     # -------------------------------------------------------------------------
+    #  Reconstruction helper (oracle fallback)
+    # -------------------------------------------------------------------------
+
+    def _reconstruct_introspection(self) -> dict:
+        queries   = self._schema.get("queries",   [])
+        mutations = self._schema.get("mutations", [])
+        types     = self._schema.get("types",     [])
+
+        query_fields = [
+            {
+                "name":               q["name"],
+                "args":               [{"name": a} for a in q.get("args", [])],
+                "isDeprecated":       False,
+                "deprecationReason":  None,
+            }
+            for q in queries
+        ]
+        mutation_fields = [
+            {
+                "name":               m["name"],
+                "args":               [{"name": a} for a in m.get("args", [])],
+                "isDeprecated":       False,
+                "deprecationReason":  None,
+            }
+            for m in mutations
+        ]
+
+        all_types = []
+
+        if query_fields:
+            all_types.append({
+                "kind":          "OBJECT",
+                "name":          "Query",
+                "fields":        query_fields,
+                "inputFields":   None,
+                "interfaces":    [],
+                "enumValues":    None,
+                "possibleTypes": None,
+            })
+
+        if mutation_fields:
+            all_types.append({
+                "kind":          "OBJECT",
+                "name":          "Mutation",
+                "fields":        mutation_fields,
+                "inputFields":   None,
+                "interfaces":    [],
+                "enumValues":    None,
+                "possibleTypes": None,
+            })
+
+        for type_name in types:
+            if type_name not in ("Query", "Mutation") and not type_name.startswith("__"):
+                all_types.append({
+                    "kind":          "OBJECT",
+                    "name":          type_name,
+                    "fields":        [],
+                    "inputFields":   None,
+                    "interfaces":    [],
+                    "enumValues":    None,
+                    "possibleTypes": None,
+                })
+
+        return {
+            "data": {
+                "__schema": {
+                    "queryType":        {"name": "Query"}    if query_fields    else None,
+                    "mutationType":     {"name": "Mutation"} if mutation_fields else None,
+                    "subscriptionType": None,
+                    "types":            all_types,
+                    "directives":       [],
+                }
+            }
+        }
+
+    # -------------------------------------------------------------------------
     #  Type resolution helpers
     # -------------------------------------------------------------------------
 
     def _resolve_field_type(self, field: dict) -> str:
-        """
-        Resolve the SDL type string for a field or input value.
-        GraphQL wraps types in NON_NULL and LIST wrappers.
-        """
         type_ref = field.get("type")
         if not type_ref:
             return "String"
@@ -479,14 +495,6 @@ class GraphQLSchemaExporter:
         return self._unwrap_type(type_ref)
 
     def _unwrap_type(self, type_ref: dict, suffix: str = "") -> str:
-        """
-        Recursively unwrap NON_NULL / LIST wrappers and return SDL type string.
-
-        Examples:
-          NON_NULL(String)     → "String!"
-          LIST(NON_NULL(Int))  → "[Int!]"
-          NON_NULL(LIST(User)) → "[User]!"
-        """
         if not isinstance(type_ref, dict):
             return "String"
 
@@ -502,30 +510,18 @@ class GraphQLSchemaExporter:
             inner = self._unwrap_type(of_type) if of_type else "String"
             return f"[{inner}]{suffix}"
 
-        # Scalar / Object / Enum / Interface — leaf type
         return name or "String"
 
 
 # -----------------------------------------------------------------------------
-#  Convenience function — used by main.py
+#  Convenience function
 # -----------------------------------------------------------------------------
 
 def export_schema(
     endpoints_json_path: str,
-    output_dir:          str  = ".",
-    fmt:                 str  = "both",
+    output_dir:          str = ".",
+    fmt:                 str = "both",
 ) -> Optional[ExportResult]:
-    """
-    Load endpoints.json and export the GraphQL schema.
-
-    Args:
-        endpoints_json_path : path to endpoints.json
-        output_dir          : where to write the output files
-        fmt                 : "voyager" | "sdl" | "both"
-
-    Returns:
-        ExportResult, or None if the file has no GraphQL schema
-    """
     try:
         with open(endpoints_json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
