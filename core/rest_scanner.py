@@ -248,12 +248,11 @@ class RESTScanner:
         "mass_assign": "_test_mass_assignment",
         "inventory":   "_test_inventory",
         "nosql":       "_test_nosql",
-        # "xss":         "_test_xss",
         "ssrf":        "_test_ssrf",
         "sensitive":   "_test_sensitive_data",
         "idor":        "_test_idor",
         "bflaw":       "_test_bfla",
-        # "rate_limit":  "_test_rate_limit",
+        "rate_limit":  "_test_rate_limit",
     }
 
     def __init__(

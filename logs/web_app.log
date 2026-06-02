@@ -101,3 +101,5 @@ AttributeError: 'sqlite3.Row' object has no attribute 'get'
 2026-05-22 16:30:18 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
 2026-05-24 12:05:31 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
 2026-05-24 16:03:36 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-05-31 23:00:37 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-06-01 12:31:12 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db

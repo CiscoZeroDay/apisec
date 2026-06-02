@@ -62,13 +62,7 @@ const TESTS_BY_TYPE = {
                "NOSQL-002 — MongoDB $gt / $lt operator injection",
                "NOSQL-003 — MongoDB $where JavaScript injection"],
     },
-    {
-      value: "xss",
-      name:  "Cross-Site Scripting",
-      owasp: "API8",
-      checks: ["XSS-001 — Reflected Cross-Site Scripting in query params",
-               "XSS-002 — Stored XSS via API body parameters"],
-    },
+
     {
       value: "idor",
       name:  "Broken Object Level Auth",
@@ -168,18 +162,8 @@ const TESTS_BY_TYPE = {
       owasp: "API2",
       checks: ["GQL-010 — CSRF on mutations via GET request"],
     },
-    {
-      value: "sqli",
-      name:  "SQL Injection",
-      owasp: "API8",
-      checks: ["GQL-011 — SQL Injection in GraphQL query/mutation arguments"],
-    },
-    {
-      value: "nosqli",
-      name:  "NoSQL Injection",
-      owasp: "API8",
-      checks: ["GQL-012 — NoSQL Injection in GraphQL arguments"],
-    },
+
+
     {
       value: "batch",
       name:  "Batch Query Abuse",
@@ -200,13 +184,7 @@ const TESTS_BY_TYPE = {
       checks: ["GQL-016 — Unbounded query depth (deeply nested queries)",
                "GQL-017 — Query complexity not enforced"],
     },
-    {
-      value: "subscription",
-      name:  "Unauth Subscription Access",
-      owasp: "API2",
-      checks: ["GQL-018 — Unauthenticated subscription access",
-               "GQL-019 — Subscription data leakage to unauthorized users"],
-    },
+
     {
       value: "error",
       name:  "Verbose Error Disclosure",
