@@ -727,8 +727,19 @@ class GraphQLScanner:
         When schema is available (the common case after GQL-S1/S2), the
         hardcoded fallback is never reached.
         """
-        path           = self._to_path(endpoint)
-        schema_muts    = self._schema_state.get_mutation_names()
+        path        = self._to_path(endpoint)
+        schema_muts = self._schema_state.get_mutation_names()
+
+        # Fix 1 — If schema is available and has no mutations, skip immediately.
+        # No point testing mutations that don't exist — prevents false positives
+        # on read-only APIs (queries only, no mutations defined in schema).
+        if self._schema_state.available and not schema_muts:
+            logger.info(
+                "    [INFO] GQL-S4 Broken Auth — skipped. "
+                "Schema has no mutations defined."
+            )
+            return []
+
         using_fallback = False
 
         if schema_muts:
@@ -765,10 +776,10 @@ class GraphQLScanner:
                     r.status_code in (401, 403)
                     or any(s in body_lower for s in AUTH_ERROR_SIGNALS)
                 )
-                is_field_missing = (
-                    r.status_code == 400
-                    and any(s in body_lower for s in FIELD_MISSING_SIGNALS)
-                )
+                # Fix 2 — GraphQL servers return HTTP 200 even for field errors.
+                # Checking only status_code == 400 misses most "field not found"
+                # responses. Check body content regardless of status code.
+                is_field_missing = any(s in body_lower for s in FIELD_MISSING_SIGNALS)
 
                 if not is_auth_error and not is_field_missing:
                     source = " (hardcoded)" if using_fallback else " (from schema)"
