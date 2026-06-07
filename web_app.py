@@ -597,7 +597,9 @@ def start_scan() -> tuple[Response, int]:
 
     target       = (data.get("url")          or "").strip()
     endpoint     = (data.get("endpoint")     or "").strip()
-    api_type     = (data.get("api_type")     or "AUTO").upper()
+    api_type_raw = (data.get("api_type") or "AUTO").strip().upper()
+    _api_map     = {"REST": "REST", "GRAPHQL": "GraphQL", "SOAP": "SOAP", "AUTO": "AUTO"}
+    api_type     = _api_map.get(api_type_raw, "AUTO")
     disc_mode    = (data.get("disc_mode")    or "quick").lower()
     tests_l      = data.get("tests")         or ["all"]
     wordlist     = (data.get("wordlist")     or "").strip()
@@ -619,7 +621,7 @@ def start_scan() -> tuple[Response, int]:
         return jsonify({"error": "Invalid URL — must start with http:// or https://"}), 400
 
     # Validate api_type — AUTO means discovery decides
-    if api_type not in ("REST", "GRAPHQL", "SOAP", "AUTO"):
+    if api_type not in ("REST", "GraphQL", "SOAP", "AUTO"):
         api_type = "AUTO"
     if disc_mode not in ("quick", "full"):
         disc_mode = "quick"
