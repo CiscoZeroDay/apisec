@@ -849,10 +849,11 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
     try:
         from reportlab.lib           import colors
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles    import ParagraphStyle
+        from reportlab.lib.styles    import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units     import cm, mm
+        from reportlab.lib.enums     import TA_CENTER, TA_LEFT, TA_RIGHT
         from reportlab.platypus      import (
-            HRFlowable, PageBreak, Paragraph,
+            HRFlowable, PageBreak, Paragraph, KeepTogether,
             SimpleDocTemplate, Spacer, Table, TableStyle,
         )
     except ImportError:
@@ -872,19 +873,22 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
         (scan_id,),
     ).fetchall()
 
+    # ── Color palette ─────────────────────────────────────────────────────────
     C = {
         "bg":       colors.HexColor("#060810"),
         "surface":  colors.HexColor("#0d1117"),
         "accent":   colors.HexColor("#00E5FF"),
         "text":     colors.HexColor("#C9D1E0"),
         "dim":      colors.HexColor("#4A5568"),
+        "border":   colors.HexColor("#1e2a3a"),
+        "row1":     colors.HexColor("#0d1117"),
+        "row2":     colors.HexColor("#111827"),
         "CRITICAL": colors.HexColor("#FF2D55"),
         "HIGH":     colors.HexColor("#FF6B35"),
         "MEDIUM":   colors.HexColor("#FFB800"),
         "LOW":      colors.HexColor("#00D9A3"),
         "INFO":     colors.HexColor("#4A9EFF"),
         "white":    colors.white,
-        "black":    colors.black,
     }
 
     buf = io.BytesIO()
@@ -892,11 +896,10 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
         buf, pagesize=A4,
         leftMargin=2*cm, rightMargin=2*cm,
         topMargin=2.5*cm, bottomMargin=2*cm,
-        title=f"APISec Security Report — {scan['target']}",
+        title=f"APISec Security Report",
         author="APISec v2.1",
     )
 
-    # Unique style names per scan to avoid reportlab global registry conflicts
     _uid = scan_id[:8]
     _ctr = [0]
 
@@ -904,170 +907,200 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
         _ctr[0] += 1
         return ParagraphStyle(f"{name}_{_uid}_{_ctr[0]}", **kw)
 
-    style_h1    = S("h1",   fontSize=22, fontName="Helvetica-Bold", textColor=C["accent"], spaceAfter=4)
-    style_h2    = S("h2",   fontSize=13, fontName="Helvetica-Bold", textColor=C["text"],   spaceBefore=12, spaceAfter=6)
-    style_body  = S("body", fontSize=9,  fontName="Helvetica",      textColor=C["text"],   leading=14)
-    style_mono  = S("mono", fontSize=8,  fontName="Courier",        textColor=C["text"],   leading=12)
-    style_label = S("lbl",  fontSize=7,  fontName="Helvetica-Bold", textColor=C["dim"],    leading=10)
+    # ── Styles ────────────────────────────────────────────────────────────────
+    style_h1     = S("h1",    fontSize=28, fontName="Helvetica-Bold",
+                              textColor=C["accent"], spaceAfter=2, leading=32)
+    style_sub    = S("sub",   fontSize=12, fontName="Helvetica",
+                              textColor=C["dim"], spaceAfter=0)
+    style_h2     = S("h2",   fontSize=13, fontName="Helvetica-Bold",
+                              textColor=C["text"], spaceBefore=14, spaceAfter=6)
+    style_h3     = S("h3",   fontSize=10, fontName="Helvetica-Bold",
+                              textColor=C["accent"], spaceBefore=8, spaceAfter=4)
+    style_body   = S("body",  fontSize=8.5, fontName="Helvetica",
+                              textColor=C["text"], leading=13, wordWrap="CJK")
+    style_mono   = S("mono",  fontSize=7.5, fontName="Courier",
+                              textColor=C["text"], leading=11, wordWrap="CJK")
+    style_label  = S("lbl",   fontSize=7, fontName="Helvetica-Bold",
+                              textColor=C["dim"], leading=10)
+    style_center = S("ctr",   fontSize=8, fontName="Helvetica",
+                              textColor=C["dim"], alignment=TA_CENTER)
+    style_cover_tag = S("ctag", fontSize=9, fontName="Helvetica-Bold",
+                                textColor=C["accent"], leading=14)
+    style_cover_val = S("cval", fontSize=9, fontName="Helvetica",
+                                textColor=C["text"], leading=14, wordWrap="CJK")
 
-    W = A4[0] - 4*cm
+    W  = A4[0] - 4*cm   # usable width
 
-    def hr(color=C["accent"], thick=1) -> HRFlowable:
-        return HRFlowable(width="100%", thickness=thick, color=color, spaceAfter=6)
+    def hr(color=None, thick=1, space_after=6) -> HRFlowable:
+        return HRFlowable(width="100%", thickness=thick,
+                          color=color or C["accent"], spaceAfter=space_after)
 
-    def meta_table(rows: list[tuple[str, str]]) -> Table:
-        t = Table(
-            [[Paragraph(k, style_label), Paragraph(v or "—", style_body)] for k, v in rows],
-            colWidths=[3.5*cm, W - 3.5*cm],
-        )
-        t.setStyle(TableStyle([
-            ("FONTNAME",       (0,0), (-1,-1), "Helvetica"),
-            ("FONTSIZE",       (0,0), (-1,-1), 8),
-            ("ROWBACKGROUNDS", (0,0), (-1,-1),
-             [colors.HexColor("#0d1117"), colors.HexColor("#111827")]),
-            ("TEXTCOLOR",      (0,0), (0,-1), C["dim"]),
-            ("TEXTCOLOR",      (1,0), (1,-1), C["text"]),
-            ("GRID",           (0,0), (-1,-1), 0.3, colors.HexColor("#1e2a3a")),
-            ("PADDING",        (0,0), (-1,-1), 5),
-            ("VALIGN",         (0,0), (-1,-1), "TOP"),
-        ]))
-        return t
+    # ── Helper: safe truncate for reportlab (no mid-char cuts) ────────────────
+    def _safe(text, limit=600) -> str:
+        if not text:
+            return "—"
+        text = str(text)
+        if len(text) <= limit:
+            return text
+        return text[:limit - 3] + "..."
 
+    # ── Cover page ────────────────────────────────────────────────────────────
     story: list = []
 
-    # Cover
-    story.append(Spacer(1, 1*cm))
+    story.append(Spacer(1, 2.5*cm))
+
+    # Title block
     story.append(Paragraph("APISec", style_h1))
-    story.append(Paragraph("API Security Audit Report",
-                            S("sub", fontSize=12, fontName="Helvetica", textColor=C["dim"])))
-    story.append(Spacer(1, 4*mm))
-    story.append(hr())
-    story.append(Spacer(1, 4*mm))
-    story.append(meta_table([
-        ("Target",   scan["target"]),
-        ("API Type", scan["api_type"]),
-        ("Tests",    scan["tests"]),
-        ("Status",   scan["status"].upper()),
-        ("Date",     scan["created_at"][:19].replace("T", " ") + " UTC"),
-        ("Duration", f"{scan['duration_sec'] or 0:.1f} s"),
-        ("Scan ID",  scan_id),
-        ("Tool",     "APISec v2.1 — PFE Security Audit"),
-    ]))
+    story.append(Paragraph("API Security Audit Report", style_sub))
+    story.append(Spacer(1, 3*mm))
+    story.append(hr(thick=2))
     story.append(Spacer(1, 6*mm))
 
-    # Severity summary
+    # Meta info table — fixed column widths prevent overflow
+    target_str = scan["target"] or "—"
+    meta_data = [
+        ["Target",    _safe(target_str, 80)],
+        ["API Type",  scan["api_type"] or "—"],
+        ["Status",    scan["status"].upper()],
+        ["Date",      scan["created_at"][:19].replace("T", " ") + " UTC"],
+        ["Duration",  f"{scan['duration_sec'] or 0:.1f} s"],
+        ["Tool",      "APISec v2.1 — API Security Audit Tool"],
+        ["Scan ID",   scan_id],
+    ]
+    meta_table = Table(
+        [[Paragraph(k, style_cover_tag), Paragraph(v, style_cover_val)]
+         for k, v in meta_data],
+        colWidths=[3.2*cm, W - 3.2*cm],
+        repeatRows=0,
+    )
+    meta_table.setStyle(TableStyle([
+        ("ROWBACKGROUNDS", (0,0), (-1,-1), [C["row1"], C["row2"]]),
+        ("GRID",           (0,0), (-1,-1), 0.3, C["border"]),
+        ("PADDING",        (0,0), (-1,-1), 6),
+        ("VALIGN",         (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING",    (0,0), (0,-1),  10),
+    ]))
+    story.append(meta_table)
+    story.append(Spacer(1, 8*mm))
+
+    # ── Severity badge row ────────────────────────────────────────────────────
     story.append(Paragraph("Vulnerability Summary", style_h2))
-    story.append(hr(C["dim"], 0.5))
+    story.append(hr(C["dim"], 0.5, 4))
+
     risk_map = {
         "CRITICAL": "Immediate exploitation possible",
         "HIGH":     "Exploitation likely",
         "MEDIUM":   "Conditional exploitation",
         "LOW":      "Difficult to exploit",
-        "INFO":     "Informational / Observation",
+        "INFO":     "Informational",
     }
-    sev_data = [["Severity", "Count", "Risk Level"]]
+    sev_data = [[
+        Paragraph("Severity",  S("sh", fontSize=8, fontName="Helvetica-Bold", textColor=C["accent"])),
+        Paragraph("Count",     S("sh", fontSize=8, fontName="Helvetica-Bold", textColor=C["accent"])),
+        Paragraph("Risk",      S("sh", fontSize=8, fontName="Helvetica-Bold", textColor=C["accent"])),
+    ]]
     for sev in SEV_ORDER:
-        sev_data.append([sev, str(scan[sev.lower()]), risk_map[sev]])
+        cnt   = scan[sev.lower()]
+        scol  = C.get(sev, C["INFO"]) if cnt > 0 else C["dim"]
+        fname = "Helvetica-Bold" if cnt > 0 else "Helvetica"
+        sev_data.append([
+            Paragraph(sev,           S("sc", fontSize=8, fontName=fname, textColor=scol)),
+            Paragraph(str(cnt),      S("sn", fontSize=9, fontName=fname, textColor=scol)),
+            Paragraph(risk_map[sev], S("sr", fontSize=8, fontName="Helvetica", textColor=C["dim"] if cnt == 0 else C["text"])),
+        ])
 
-    sev_table = Table(sev_data, colWidths=[4*cm, 2.5*cm, W-6.5*cm])
-    ts = [
-        ("FONTNAME",       (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE",       (0,0), (-1,-1), 8),
-        ("BACKGROUND",     (0,0), (-1,0), C["surface"]),
-        ("TEXTCOLOR",      (0,0), (-1,0), C["accent"]),
-        ("GRID",           (0,0), (-1,-1), 0.3, colors.HexColor("#1e2a3a")),
-        ("PADDING",        (0,0), (-1,-1), 5),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1),
-         [colors.HexColor("#0d1117"), colors.HexColor("#111827")]),
+    sev_table = Table(sev_data, colWidths=[3.5*cm, 2*cm, W - 5.5*cm])
+    sev_ts = [
+        ("BACKGROUND",     (0,0), (-1,0),  C["surface"]),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [C["row1"], C["row2"]]),
+        ("GRID",           (0,0), (-1,-1), 0.3, C["border"]),
+        ("PADDING",        (0,0), (-1,-1), 6),
+        ("VALIGN",         (0,0), (-1,-1), "MIDDLE"),
+        ("LEFTPADDING",    (0,0), (-1,-1), 8),
     ]
-    for i, sev in enumerate(SEV_ORDER, 1):
-        cnt = scan[sev.lower()]
-        if cnt > 0:
-            ts += [
-                ("TEXTCOLOR", (0,i), (0,i), C[sev]),
-                ("FONTNAME",  (0,i), (0,i), "Helvetica-Bold"),
-                ("TEXTCOLOR", (1,i), (1,i), C[sev]),
-                ("FONTNAME",  (1,i), (1,i), "Helvetica-Bold"),
-            ]
-        else:
-            ts.append(("TEXTCOLOR", (0,i), (-1,i), C["dim"]))
-    sev_table.setStyle(TableStyle(ts))
+    sev_table.setStyle(TableStyle(sev_ts))
     story.append(sev_table)
     story.append(Spacer(1, 4*mm))
 
     if scan["findings"] == 0:
+        story.append(Spacer(1, 4*mm))
         story.append(Paragraph(
-            "✓ No vulnerabilities detected during this scan.",
-            S("ok", fontSize=10, fontName="Helvetica-Bold",
-              textColor=C["LOW"], spaceBefore=8),
+            "No vulnerabilities detected during this scan.",
+            S("ok", fontSize=10, fontName="Helvetica-Bold", textColor=C["LOW"]),
         ))
 
-    # Findings detail
+    # ── Findings detail ───────────────────────────────────────────────────────
     if findings_rows:
         story.append(PageBreak())
         story.append(Paragraph("Findings Detail", style_h2))
-        story.append(hr())
+        story.append(hr(thick=1.5, space_after=6))
         story.append(Spacer(1, 2*mm))
 
         for i, f in enumerate([dict(r) for r in findings_rows], 1):
             sev   = (f.get("severity") or "INFO").upper()
             color = C.get(sev, C["INFO"])
 
-            ht = Table([[
-                Paragraph(f"#{i:02d}",                S("fn", fontSize=9, fontName="Helvetica-Bold", textColor=C["accent"])),
-                Paragraph(f"[{sev}]",                 S("fs", fontSize=9, fontName="Helvetica-Bold", textColor=color)),
-                Paragraph(f.get("vuln_id") or "—",    S("fi", fontSize=8, fontName="Courier",        textColor=C["dim"])),
-                Paragraph(f.get("vuln_type") or "Unknown", S("ft", fontSize=9, fontName="Helvetica-Bold", textColor=C["text"])),
-            ]], colWidths=[1*cm, 2*cm, 3*cm, W-6*cm])
-            ht.setStyle(TableStyle([
+            # Finding header row
+            hdr = Table([[
+                Paragraph(f"#{i:02d}",
+                    S("fn", fontSize=9, fontName="Helvetica-Bold", textColor=C["accent"])),
+                Paragraph(f"[{sev}]",
+                    S("fs", fontSize=9, fontName="Helvetica-Bold", textColor=color)),
+                Paragraph(f.get("vuln_id") or "—",
+                    S("fi", fontSize=8, fontName="Courier", textColor=C["dim"])),
+                Paragraph(_safe(f.get("vuln_type") or "Unknown", 60),
+                    S("ft", fontSize=9, fontName="Helvetica-Bold", textColor=C["text"])),
+            ]], colWidths=[1.2*cm, 2*cm, 2.8*cm, W - 6*cm])
+            hdr.setStyle(TableStyle([
                 ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#111827")),
-                ("LINEBELOW",  (0,0), (-1,-1), 1.5, color),
-                ("PADDING",    (0,0), (-1,-1), 5),
+                ("LINEBELOW",  (0,0), (-1,-1), 2, color),
+                ("PADDING",    (0,0), (-1,-1), 6),
                 ("VALIGN",     (0,0), (-1,-1), "MIDDLE"),
             ]))
-            story.append(ht)
 
+            # Detail rows — no truncation on description/solution
             detail_rows = [
-                ("Endpoint",    f.get("endpoint")),
-                ("Method",      f.get("method")),
-                ("OWASP",       f.get("owasp")),
-                ("CWE",         f.get("cwe")),
-                ("Confidence",  f.get("confidence")),
-                ("Parameter",   f.get("parameter")),
-                ("Payload",     f.get("payload")),
-                ("Evidence",    f.get("evidence")),
-                ("Description", f.get("description")),
-                ("Solution",    f.get("solution")),
-                ("Reference",   f.get("reference")),
+                ("Endpoint",    _safe(f.get("endpoint"),    90)),
+                ("Method",      _safe(f.get("method"),      20)),
+                ("OWASP",       _safe(f.get("owasp"),       80)),
+                ("CWE",         _safe(f.get("cwe"),         20)),
+                ("Confidence",  _safe(f.get("confidence"),  20)),
+                ("Parameter",   _safe(f.get("parameter"),   200)),
+                ("Payload",     _safe(f.get("payload"),     300)),
+                ("Evidence",    _safe(f.get("evidence"),    400)),
+                ("Description", _safe(f.get("description"), 1000)),
+                ("Solution",    _safe(f.get("solution"),    1000)),
+                ("Reference",   _safe(f.get("reference"),   200)),
             ]
-            detail_rows = [(k, v) for k, v in detail_rows if v]
+            detail_rows = [(k, v) for k, v in detail_rows if v and v != "—"]
 
-            if detail_rows:
-                dt = Table(
-                    [[Paragraph(k, style_label),
-                      Paragraph(str(v)[:400],
-                                style_mono if k in ("Payload","Evidence") else style_body)]
-                     for k, v in detail_rows],
-                    colWidths=[2.8*cm, W-2.8*cm],
-                )
-                dt.setStyle(TableStyle([
-                    ("FONTSIZE",       (0,0), (-1,-1), 8),
-                    ("ROWBACKGROUNDS", (0,0), (-1,-1),
-                     [colors.HexColor("#0a0e1a"), colors.HexColor("#0d1117")]),
-                    ("GRID",    (0,0), (-1,-1), 0.2, colors.HexColor("#1a2030")),
-                    ("PADDING", (0,0), (-1,-1), 4),
-                    ("VALIGN",  (0,0), (-1,-1), "TOP"),
-                ]))
-                story.append(dt)
+            dt_rows = []
+            for k, v in detail_rows:
+                use_mono = k in ("Payload", "Evidence", "Reference")
+                dt_rows.append([
+                    Paragraph(k, style_label),
+                    Paragraph(v, style_mono if use_mono else style_body),
+                ])
 
-            story.append(Spacer(1, 3*mm))
+            dt = Table(dt_rows, colWidths=[2.5*cm, W - 2.5*cm])
+            dt.setStyle(TableStyle([
+                ("ROWBACKGROUNDS", (0,0), (-1,-1), [colors.HexColor("#0a0e1a"), C["row1"]]),
+                ("GRID",           (0,0), (-1,-1), 0.2, C["border"]),
+                ("PADDING",        (0,0), (-1,-1), 5),
+                ("VALIGN",         (0,0), (-1,-1), "TOP"),
+                ("LEFTPADDING",    (0,0), (0,-1),  8),
+            ]))
 
-    # Footer
-    story.append(Spacer(1, 1*cm))
-    story.append(hr(C["dim"], 0.5))
+            # KeepTogether prevents orphan headers at page bottom
+            story.append(KeepTogether([hdr, dt]))
+            story.append(Spacer(1, 4*mm))
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 8*mm))
+    story.append(hr(C["dim"], 0.5, 4))
     story.append(Paragraph(
-        f"Generated by APISec v2.1 — PFE Security Audit Tool — {_now_iso()} UTC",
-        S("footer", fontSize=7, fontName="Helvetica", textColor=C["dim"], alignment=1),
+        f"Generated by APISec v2.1 — API Security Audit Tool — {_now_iso()} UTC",
+        style_center,
     ))
 
     doc.build(story)
