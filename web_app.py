@@ -1029,20 +1029,14 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
 
     # Meta info
     target_str = _safe(scan["target"] or "—", 75)
-    # Use detected API type from findings if scan was AUTO
-    vuln_ids_early = []
-    try:
-        import json as _json
-        raw_results = scan["results_json"] or "[]"
-        early_findings = _json.loads(raw_results)
-        vuln_ids_early = [f.get("vuln_id", "") for f in early_findings if isinstance(f, dict)]
-    except Exception:
-        pass
+    # Detect real API type from findings vuln_id prefixes
     detected_api_type = scan["api_type"] or "—"
-    if detected_api_type == "AUTO":
-        if any(v.startswith("GQL")  for v in vuln_ids_early): detected_api_type = "GraphQL (auto-detected)"
-        elif any(v.startswith("SOAP") for v in vuln_ids_early): detected_api_type = "SOAP (auto-detected)"
-        elif vuln_ids_early: detected_api_type = "REST (auto-detected)"
+    if detected_api_type in ("AUTO", "auto", ""):
+        fids = [f.get("vuln_id", "") or "" for f in findings_list]
+        if any(v.startswith("GQL")  for v in fids):  detected_api_type = "GraphQL"
+        elif any(v.startswith("SOAP") for v in fids): detected_api_type = "SOAP"
+        elif fids:                                     detected_api_type = "REST"
+        else:                                          detected_api_type = "Unknown"
 
     story.append(_info_tbl([
         ("Target URL",  target_str),
