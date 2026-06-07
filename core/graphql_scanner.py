@@ -198,6 +198,10 @@ ERROR_LEAK_SIGNALS: list[tuple[str, str]] = [
     ("strawberry",                    "Strawberry Python"),
 ]
 
+BUILTIN_SCALARS: set[str] = {
+    "String", "Int", "Float", "Boolean", "ID",
+}
+
 DEPTH_BLOCKED_SIGNALS: list[str] = [
     "max depth", "maxdepth", "query depth", "too deep",
     "complexity", "limit exceeded", "query too complex",
@@ -487,7 +491,13 @@ class GraphQLScanner:
         path = self._to_path(endpoint)
 
         if self._schema_state.status == SchemaStatus.AVAILABLE_FROM_DISCOVERY:
-            types_count = len(self._schema_state.get_types())
+            real_types  = [
+                t for t in self._schema_state.get_types()
+                if t.get("name")
+                and not t["name"].startswith("__")
+                and t["name"] not in BUILTIN_SCALARS
+            ]
+            types_count = len(real_types)
 
             # Resolve the real HTTP method used during discovery.
             # discovery.py stores the method in schema["method"] e.g.
@@ -510,7 +520,7 @@ class GraphQLScanner:
                 method   = real_method,
                 payload  = real_payload,
                 evidence = (
-                    f"Introspection active — {types_count} types exposed "
+                    f"Introspection active — {types_count} user-defined types exposed "
                     f"(schema pre-fetched during discovery via {disc_method or 'unknown'})"
                 ),
             )]
@@ -540,14 +550,20 @@ class GraphQLScanner:
                 self._schema_state.raw    = full
                 self._schema_state.status = SchemaStatus.AVAILABLE_FROM_SCAN
 
-        types_count = len(self._schema_state.get_types())
+        real_types  = [
+            t for t in self._schema_state.get_types()
+            if t.get("name")
+            and not t["name"].startswith("__")
+            and t["name"] not in BUILTIN_SCALARS
+        ]
+        types_count = len(real_types)
         logger.info(f"    [VULN] GQL-S1 Introspection exposed → {endpoint}")
         return [_vuln(
             name     = "introspection",
             endpoint = endpoint,
             method   = "POST",
             payload  = INTROSPECTION_PROBE,
-            evidence = f"Introspection active — {types_count} types exposed",
+            evidence = f"Introspection active — {types_count} user-defined types exposed",
         )]
 
     # =========================================================================
