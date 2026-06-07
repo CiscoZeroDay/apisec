@@ -10897,6 +10897,7 @@ search
 login
 logout
 register
+api
 api/ads
 api/announcements
 api/api
