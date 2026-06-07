@@ -143,6 +143,118 @@ def _compute_stats(findings: list[dict]) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Dynamic OWASP coverage table
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Full OWASP API Top 10 2023 definitions
+_OWASP_TOP10 = [
+    ("API1",  "Broken Object Level Authorization",
+     {"REST": "IDOR, path traversal",          "GraphQL": "IDOR via queries",         "SOAP": "BOLA/IDOR on operations"},
+     ["API1:2023"]),
+    ("API2",  "Broken Authentication",
+     {"REST": "JWT none/alg confusion, no rate limit", "GraphQL": "Mutation auth bypass", "SOAP": "WS-Security bypass, replay"},
+     ["API2:2023"]),
+    ("API3",  "Broken Object Property Level Authorization",
+     {"REST": "Mass assignment, sensitive data", "GraphQL": "Sensitive field exposure",  "SOAP": "SQLi, XPath injection"},
+     ["API3:2023"]),
+    ("API4",  "Unrestricted Resource Consumption",
+     {"REST": "Rate limiting absent",           "GraphQL": "Depth/alias/batch attacks", "SOAP": "XML DoS, billion laughs"},
+     ["API4:2023"]),
+    ("API5",  "Broken Function Level Authorization",
+     {"REST": "BFLA, HTTP method tampering",    "GraphQL": "Mutation auth bypass",      "SOAP": "SOAPAction spoofing"},
+     ["API5:2023"]),
+    ("API6",  "Unrestricted Access to Sensitive Business Flows",
+     {"REST": "Sensitive data in responses",    "GraphQL": "Field exposure",            "SOAP": "Fault disclosure"},
+     ["API6:2023"]),
+    ("API7",  "Server Side Request Forgery",
+     {"REST": "SSRF via URL parameters",        "GraphQL": "N/A",                       "SOAP": "XXE-based SSRF"},
+     ["API7:2023"]),
+    ("API8",  "Security Misconfiguration",
+     {"REST": "CORS, headers, error disclosure","GraphQL": "Introspection, CSRF",       "SOAP": "WSDL exposure, XXE, cmd injection"},
+     ["API8:2023"]),
+    ("API9",  "Improper Inventory Management",
+     {"REST": "Exposed docs, debug, old versions", "GraphQL": "Schema exposure",        "SOAP": "WSDL disclosure"},
+     ["API9:2023"]),
+    ("API10", "Unsafe Consumption of APIs",
+     {"REST": "SQLi, NoSQLi, XSS",             "GraphQL": "SQLi, NoSQLi",              "SOAP": "SQL/XML injection"},
+     ["API10:2023"]),
+]
+
+
+def _render_owasp_table(findings: list[dict]) -> str:
+    """
+    Build a dynamic OWASP API Top 10 coverage table.
+
+    For each category, checks if any finding maps to it via its owasp field.
+    Marks as Vulnerable (red), Not Detected (green), or Not Tested (gray).
+    """
+    # Collect all OWASP tags from findings
+    found_owasp: set[str] = set()
+    for f in findings:
+        owasp_val = f.get("owasp", "")
+        # Extract API ID e.g. "API8:2023 - ..." -> "API8:2023"
+        if ":" in owasp_val:
+            tag = owasp_val.split(" ")[0]  # "API8:2023"
+            found_owasp.add(tag)
+
+    # Detect API type from vuln_id prefixes
+    vuln_ids = [f.get("vuln_id", "") for f in findings]
+    if any(v.startswith("GQL") for v in vuln_ids):
+        api_type = "GraphQL"
+    elif any(v.startswith("SOAP") for v in vuln_ids):
+        api_type = "SOAP"
+    else:
+        api_type = "REST"
+
+    tex = r"""\begin{center}
+\begin{longtable}{p{1.1cm}p{5.5cm}p{4.5cm}p{2.5cm}}
+\toprule
+\rowcolor{TableHeader}
+\textcolor{white}{\textbf{ID}} &
+\textcolor{white}{\textbf{Category}} &
+\textcolor{white}{\textbf{Test Coverage}} &
+\textcolor{white}{\textbf{Status}} \\
+\midrule
+\endfirsthead
+\toprule
+\rowcolor{TableHeader}
+\textcolor{white}{\textbf{ID}} &
+\textcolor{white}{\textbf{Category}} &
+\textcolor{white}{\textbf{Test Coverage}} &
+\textcolor{white}{\textbf{Status}} \\
+\midrule
+\endhead
+"""
+
+    for api_id, category, coverage_map, owasp_tags in _OWASP_TOP10:
+        coverage = coverage_map.get(api_type, "N/A")
+
+        # Check if any finding matches this category
+        is_vulnerable = any(
+            any(tag in owasp_val for tag in owasp_tags)
+            for owasp_val in found_owasp
+        )
+
+        if is_vulnerable:
+            status = r"\textcolor{CriticalRed}{\textbf{$\bullet$ Vulnerable}}"
+        else:
+            status = r"\textcolor{LowGreen}{\checkmark~Not Detected}"
+
+        tex += (
+            r"\textbf{" + api_id + r"} & "
+            + _esc(category) + " & "
+            + _esc(coverage) + " & "
+            + status + r" \\" + "\n"
+        )
+
+    tex += r"""\bottomrule
+\end{longtable}
+\end{center}
+"""
+    return tex
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  LaTeX template rendering
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -450,27 +562,7 @@ OWASP API Security Testing Guide. The audit is conducted in three phases:
 
 \section{OWASP API Security Top 10 Coverage}
 
-\begin{center}
-\begin{tabular}{lll}
-\toprule
-\rowcolor{TableHeader}
-\textcolor{white}{\textbf{ID}} &
-\textcolor{white}{\textbf{Category}} &
-\textcolor{white}{\textbf{Test Coverage}} \\
-\midrule
-API1  & Broken Object Level Authorization   & IDOR, GraphQL query enumeration \\
-API2  & Broken Authentication               & JWT attacks, token bypass \\
-API3  & Broken Object Property Level Auth   & Mass assignment, field exposure \\
-API4  & Unrestricted Resource Consumption   & Depth/alias/batch attacks \\
-API5  & Broken Function Level Authorization & BFLA, mutation auth bypass \\
-API6  & Unrestricted Access to Sensitive    & Sensitive data in responses \\
-API7  & Server Side Request Forgery         & SSRF via URL parameters \\
-API8  & Security Misconfiguration           & CORS, headers, introspection \\
-API9  & Improper Inventory Management       & Exposed docs, debug endpoints \\
-API10 & Unsafe Consumption of APIs          & Injection (SQLi, NoSQLi, XSS) \\
-\bottomrule
-\end{tabular}
-\end{center}
+""" + _render_owasp_table(findings) + r"""
 """
 
     # ── Chapter 3 — Detailed Findings ─────────────────────────────────────────
