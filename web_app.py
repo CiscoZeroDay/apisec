@@ -849,13 +849,15 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
     try:
         from reportlab.lib           import colors
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles    import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.styles    import ParagraphStyle
         from reportlab.lib.units     import cm, mm
         from reportlab.lib.enums     import TA_CENTER, TA_LEFT, TA_RIGHT
         from reportlab.platypus      import (
             HRFlowable, PageBreak, Paragraph, KeepTogether,
+            BaseDocTemplate, Frame, PageTemplate,
             SimpleDocTemplate, Spacer, Table, TableStyle,
         )
+        from reportlab.pdfgen        import canvas as rl_canvas
     except ImportError:
         return jsonify({"error": "reportlab not installed",
                         "fix":   "pip install reportlab"}), 500
@@ -872,31 +874,83 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
              WHEN 'LOW' THEN 3 ELSE 4 END""",
         (scan_id,),
     ).fetchall()
+    findings_list = [dict(r) for r in findings_rows]
 
-    # ── Color palette ─────────────────────────────────────────────────────────
+    # ── Professional light color palette ──────────────────────────────────────
     C = {
-        "bg":       colors.HexColor("#060810"),
-        "surface":  colors.HexColor("#0d1117"),
-        "accent":   colors.HexColor("#00E5FF"),
-        "text":     colors.HexColor("#C9D1E0"),
-        "dim":      colors.HexColor("#4A5568"),
-        "border":   colors.HexColor("#1e2a3a"),
-        "row1":     colors.HexColor("#0d1117"),
-        "row2":     colors.HexColor("#111827"),
-        "CRITICAL": colors.HexColor("#FF2D55"),
-        "HIGH":     colors.HexColor("#FF6B35"),
-        "MEDIUM":   colors.HexColor("#FFB800"),
-        "LOW":      colors.HexColor("#00D9A3"),
-        "INFO":     colors.HexColor("#4A9EFF"),
-        "white":    colors.white,
+        "white":      colors.white,
+        "black":      colors.HexColor("#1A1A2E"),
+        "navy":       colors.HexColor("#1A3A5C"),
+        "navy_light": colors.HexColor("#2E5F8A"),
+        "accent":     colors.HexColor("#2E86AB"),
+        "gray_dark":  colors.HexColor("#4A5568"),
+        "gray_mid":   colors.HexColor("#718096"),
+        "gray_light": colors.HexColor("#EDF2F7"),
+        "gray_table": colors.HexColor("#F7FAFC"),
+        "border":     colors.HexColor("#CBD5E0"),
+        "CRITICAL":   colors.HexColor("#C53030"),
+        "HIGH":       colors.HexColor("#C05621"),
+        "MEDIUM":     colors.HexColor("#B7791F"),
+        "LOW":        colors.HexColor("#276749"),
+        "INFO":       colors.HexColor("#2B6CB0"),
+        "crit_bg":    colors.HexColor("#FFF5F5"),
+        "high_bg":    colors.HexColor("#FFFAF0"),
+        "med_bg":     colors.HexColor("#FFFFF0"),
+        "low_bg":     colors.HexColor("#F0FFF4"),
+        "info_bg":    colors.HexColor("#EBF8FF"),
     }
+    SEV_BG = {"CRITICAL": C["crit_bg"], "HIGH": C["high_bg"],
+               "MEDIUM": C["med_bg"], "LOW": C["low_bg"], "INFO": C["info_bg"]}
+
+    # ── Stats ─────────────────────────────────────────────────────────────────
+    counts     = {s: scan[s.lower()] for s in SEV_ORDER}
+    total      = sum(counts.values())
+    risk_score = counts["CRITICAL"]*10 + counts["HIGH"]*5 + counts["MEDIUM"]*2 + counts["LOW"]*1
+    if   risk_score == 0:  risk_label, risk_col = "None",     C["LOW"]
+    elif risk_score <= 5:  risk_label, risk_col = "Low",      C["LOW"]
+    elif risk_score <= 15: risk_label, risk_col = "Medium",   C["MEDIUM"]
+    elif risk_score <= 30: risk_label, risk_col = "High",     C["HIGH"]
+    else:                  risk_label, risk_col = "Critical", C["CRITICAL"]
+
+    # ── Page size ─────────────────────────────────────────────────────────────
+    PW, PH = A4
+    LM, RM, TM, BM = 2.2*cm, 2.2*cm, 2.5*cm, 2.2*cm
+    W = PW - LM - RM
 
     buf = io.BytesIO()
+
+    # ── Header/Footer callback ────────────────────────────────────────────────
+    page_num_holder = [0]
+
+    def _on_page(canv, doc):
+        page_num_holder[0] = doc.page
+        pn = doc.page
+        if pn == 1:
+            return   # no header/footer on cover
+        canv.saveState()
+        # Header bar
+        canv.setFillColor(C["navy"])
+        canv.rect(0, PH - 1.4*cm, PW, 1.4*cm, fill=1, stroke=0)
+        canv.setFont("Helvetica-Bold", 8)
+        canv.setFillColor(colors.white)
+        canv.drawString(LM, PH - 0.95*cm, "APISec — API Security Audit Report")
+        canv.setFont("Helvetica", 8)
+        date_str = scan["created_at"][:10]
+        canv.drawRightString(PW - RM, PH - 0.95*cm, date_str)
+        # Footer
+        canv.setFillColor(C["border"])
+        canv.rect(0, 0, PW, 0.9*cm, fill=1, stroke=0)
+        canv.setFont("Helvetica", 7)
+        canv.setFillColor(C["gray_dark"])
+        canv.drawString(LM, 0.32*cm, "Confidential — APISec v2.1 — Automated API Security Audit Tool")
+        canv.drawRightString(PW - RM, 0.32*cm, f"Page {pn}")
+        canv.restoreState()
+
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        leftMargin=2*cm, rightMargin=2*cm,
-        topMargin=2.5*cm, bottomMargin=2*cm,
-        title=f"APISec Security Report",
+        leftMargin=LM, rightMargin=RM,
+        topMargin=TM + 0.5*cm, bottomMargin=BM + 0.5*cm,
+        title="APISec Security Report",
         author="APISec v2.1",
     )
 
@@ -908,202 +962,435 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
         return ParagraphStyle(f"{name}_{_uid}_{_ctr[0]}", **kw)
 
     # ── Styles ────────────────────────────────────────────────────────────────
-    style_h1     = S("h1",    fontSize=28, fontName="Helvetica-Bold",
-                              textColor=C["accent"], spaceAfter=2, leading=32)
-    style_sub    = S("sub",   fontSize=12, fontName="Helvetica",
-                              textColor=C["dim"], spaceAfter=0)
-    style_h2     = S("h2",   fontSize=13, fontName="Helvetica-Bold",
-                              textColor=C["text"], spaceBefore=14, spaceAfter=6)
-    style_h3     = S("h3",   fontSize=10, fontName="Helvetica-Bold",
-                              textColor=C["accent"], spaceBefore=8, spaceAfter=4)
-    style_body   = S("body",  fontSize=8.5, fontName="Helvetica",
-                              textColor=C["text"], leading=13, wordWrap="CJK")
-    style_mono   = S("mono",  fontSize=7.5, fontName="Courier",
-                              textColor=C["text"], leading=11, wordWrap="CJK")
-    style_label  = S("lbl",   fontSize=7, fontName="Helvetica-Bold",
-                              textColor=C["dim"], leading=10)
-    style_center = S("ctr",   fontSize=8, fontName="Helvetica",
-                              textColor=C["dim"], alignment=TA_CENTER)
-    style_cover_tag = S("ctag", fontSize=9, fontName="Helvetica-Bold",
-                                textColor=C["accent"], leading=14)
-    style_cover_val = S("cval", fontSize=9, fontName="Helvetica",
-                                textColor=C["text"], leading=14, wordWrap="CJK")
+    sty_title   = S("title",  fontSize=36, fontName="Helvetica-Bold",
+                               textColor=colors.white, alignment=TA_CENTER, leading=42)
+    sty_sub     = S("sub",    fontSize=14, fontName="Helvetica",
+                               textColor=colors.HexColor("#A8D8EA"), alignment=TA_CENTER)
+    sty_h2      = S("h2",     fontSize=14, fontName="Helvetica-Bold",
+                               textColor=C["navy"], spaceBefore=16, spaceAfter=6)
+    sty_h3      = S("h3",     fontSize=11, fontName="Helvetica-Bold",
+                               textColor=C["navy_light"], spaceBefore=10, spaceAfter=4)
+    sty_body    = S("body",   fontSize=9, fontName="Helvetica",
+                               textColor=C["black"], leading=14, wordWrap="CJK")
+    sty_mono    = S("mono",   fontSize=8, fontName="Courier",
+                               textColor=C["gray_dark"], leading=12, wordWrap="CJK",
+                               backColor=C["gray_light"])
+    sty_label   = S("lbl",    fontSize=8, fontName="Helvetica-Bold",
+                               textColor=C["gray_dark"], leading=11)
+    sty_center  = S("ctr",    fontSize=8, fontName="Helvetica",
+                               textColor=C["gray_mid"], alignment=TA_CENTER)
+    sty_toc_h   = S("toch",   fontSize=11, fontName="Helvetica-Bold",
+                               textColor=C["navy"], leading=20)
+    sty_toc     = S("toc",    fontSize=9.5, fontName="Helvetica",
+                               textColor=C["black"], leading=18, leftIndent=12)
 
-    W  = A4[0] - 4*cm   # usable width
-
-    def hr(color=None, thick=1, space_after=6) -> HRFlowable:
+    def hr(color=None, thick=0.5, space_after=6):
         return HRFlowable(width="100%", thickness=thick,
-                          color=color or C["accent"], spaceAfter=space_after)
+                          color=color or C["navy"], spaceAfter=space_after)
 
-    # ── Helper: safe truncate for reportlab (no mid-char cuts) ────────────────
-    def _safe(text, limit=600) -> str:
-        if not text:
-            return "—"
+    def _safe(text, limit=800):
+        if not text: return "—"
         text = str(text)
-        if len(text) <= limit:
-            return text
-        return text[:limit - 3] + "..."
+        return text if len(text) <= limit else text[:limit-3] + "..."
 
-    # ── Cover page ────────────────────────────────────────────────────────────
+    def _info_tbl(rows, col1=3.5*cm):
+        data = [[Paragraph(k, sty_label), Paragraph(v, sty_body)] for k, v in rows]
+        t = Table(data, colWidths=[col1, W - col1])
+        t.setStyle(TableStyle([
+            ("ROWBACKGROUNDS", (0,0), (-1,-1), [colors.white, C["gray_table"]]),
+            ("GRID",           (0,0), (-1,-1), 0.4, C["border"]),
+            ("PADDING",        (0,0), (-1,-1), 6),
+            ("VALIGN",         (0,0), (-1,-1), "TOP"),
+            ("FONTNAME",       (0,0), (0,-1),  "Helvetica-Bold"),
+            ("TEXTCOLOR",      (0,0), (0,-1),  C["gray_dark"]),
+        ]))
+        return t
+
     story: list = []
 
-    story.append(Spacer(1, 2.5*cm))
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 1 — COVER  (no header/footer)
+    # ══════════════════════════════════════════════════════════════════════════
 
-    # Title block
-    story.append(Paragraph("APISec", style_h1))
-    story.append(Paragraph("API Security Audit Report", style_sub))
-    story.append(Spacer(1, 3*mm))
-    story.append(hr(thick=2))
-    story.append(Spacer(1, 6*mm))
-
-    # Meta info table — fixed column widths prevent overflow
-    target_str = scan["target"] or "—"
-    meta_data = [
-        ["Target",    _safe(target_str, 80)],
-        ["API Type",  scan["api_type"] or "—"],
-        ["Status",    scan["status"].upper()],
-        ["Date",      scan["created_at"][:19].replace("T", " ") + " UTC"],
-        ["Duration",  f"{scan['duration_sec'] or 0:.1f} s"],
-        ["Tool",      "APISec v2.1 — API Security Audit Tool"],
-        ["Scan ID",   scan_id],
-    ]
-    meta_table = Table(
-        [[Paragraph(k, style_cover_tag), Paragraph(v, style_cover_val)]
-         for k, v in meta_data],
-        colWidths=[3.2*cm, W - 3.2*cm],
-        repeatRows=0,
+    # Navy top banner
+    cover_banner = Table(
+        [[Paragraph("APISec", sty_title)],
+         [Paragraph("API Security Audit Report", sty_sub)]],
+        colWidths=[W],
     )
-    meta_table.setStyle(TableStyle([
-        ("ROWBACKGROUNDS", (0,0), (-1,-1), [C["row1"], C["row2"]]),
-        ("GRID",           (0,0), (-1,-1), 0.3, C["border"]),
-        ("PADDING",        (0,0), (-1,-1), 6),
-        ("VALIGN",         (0,0), (-1,-1), "TOP"),
-        ("LEFTPADDING",    (0,0), (0,-1),  10),
+    cover_banner.setStyle(TableStyle([
+        ("BACKGROUND",  (0,0), (-1,-1), C["navy"]),
+        ("PADDING",     (0,0), (-1,-1), 18),
+        ("ALIGN",       (0,0), (-1,-1), "CENTER"),
+        ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
     ]))
-    story.append(meta_table)
+    story.append(cover_banner)
     story.append(Spacer(1, 8*mm))
 
-    # ── Severity badge row ────────────────────────────────────────────────────
-    story.append(Paragraph("Vulnerability Summary", style_h2))
-    story.append(hr(C["dim"], 0.5, 4))
+    # Meta info
+    target_str = _safe(scan["target"] or "—", 75)
+    story.append(_info_tbl([
+        ("Target URL",  target_str),
+        ("API Type",    scan["api_type"] or "—"),
+        ("Scan Status", scan["status"].upper()),
+        ("Date",        scan["created_at"][:19].replace("T", " ") + " UTC"),
+        ("Duration",    f"{scan['duration_sec'] or 0:.1f} s"),
+        ("Tool",        "APISec v2.1 — Automated API Security Audit"),
+        ("Scan ID",     scan_id),
+    ]))
+    story.append(Spacer(1, 8*mm))
 
-    risk_map = {
-        "CRITICAL": "Immediate exploitation possible",
-        "HIGH":     "Exploitation likely",
-        "MEDIUM":   "Conditional exploitation",
-        "LOW":      "Difficult to exploit",
-        "INFO":     "Informational",
-    }
-    sev_data = [[
-        Paragraph("Severity",  S("sh", fontSize=8, fontName="Helvetica-Bold", textColor=C["accent"])),
-        Paragraph("Count",     S("sh", fontSize=8, fontName="Helvetica-Bold", textColor=C["accent"])),
-        Paragraph("Risk",      S("sh", fontSize=8, fontName="Helvetica-Bold", textColor=C["accent"])),
-    ]]
-    for sev in SEV_ORDER:
-        cnt   = scan[sev.lower()]
-        scol  = C.get(sev, C["INFO"]) if cnt > 0 else C["dim"]
-        fname = "Helvetica-Bold" if cnt > 0 else "Helvetica"
-        sev_data.append([
-            Paragraph(sev,           S("sc", fontSize=8, fontName=fname, textColor=scol)),
-            Paragraph(str(cnt),      S("sn", fontSize=9, fontName=fname, textColor=scol)),
-            Paragraph(risk_map[sev], S("sr", fontSize=8, fontName="Helvetica", textColor=C["dim"] if cnt == 0 else C["text"])),
-        ])
-
-    sev_table = Table(sev_data, colWidths=[3.5*cm, 2*cm, W - 5.5*cm])
-    sev_ts = [
-        ("BACKGROUND",     (0,0), (-1,0),  C["surface"]),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [C["row1"], C["row2"]]),
-        ("GRID",           (0,0), (-1,-1), 0.3, C["border"]),
-        ("PADDING",        (0,0), (-1,-1), 6),
-        ("VALIGN",         (0,0), (-1,-1), "MIDDLE"),
-        ("LEFTPADDING",    (0,0), (-1,-1), 8),
+    # Risk level + severity badges in one table
+    risk_data = [
+        [Paragraph("Overall Risk Level", S("rlt", fontSize=9, fontName="Helvetica-Bold",
+                   textColor=C["gray_dark"], alignment=TA_CENTER))] +
+        [Paragraph(s, S("st", fontSize=8, fontName="Helvetica-Bold",
+                         textColor=C.get(s, C["INFO"]), alignment=TA_CENTER))
+         for s in SEV_ORDER],
+        [Paragraph(risk_label, S("rlv", fontSize=20, fontName="Helvetica-Bold",
+                   textColor=risk_col, alignment=TA_CENTER))] +
+        [Paragraph(str(counts[s]), S("sv", fontSize=18, fontName="Helvetica-Bold",
+                   textColor=C.get(s, C["INFO"]) if counts[s] > 0 else C["border"],
+                   alignment=TA_CENTER))
+         for s in SEV_ORDER],
     ]
-    sev_table.setStyle(TableStyle(sev_ts))
-    story.append(sev_table)
+    risk_tbl = Table(risk_data, colWidths=[3*cm] + [W/6]*5 + [0])
+    # fix colwidths
+    risk_tbl = Table(risk_data, colWidths=[3.2*cm, (W-3.2*cm)/5, (W-3.2*cm)/5,
+                                            (W-3.2*cm)/5, (W-3.2*cm)/5, (W-3.2*cm)/5])
+    bg_row2 = [SEV_BG.get(s, colors.white) for s in SEV_ORDER]
+    risk_tbl.setStyle(TableStyle([
+        ("GRID",        (0,0), (-1,-1), 0.4, C["border"]),
+        ("PADDING",     (0,0), (-1,-1), 10),
+        ("ALIGN",       (0,0), (-1,-1), "CENTER"),
+        ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+        ("BACKGROUND",  (0,0), (0,-1),  C["gray_light"]),
+        ("BACKGROUND",  (1,0), (1,-1),  C["crit_bg"]),
+        ("BACKGROUND",  (2,0), (2,-1),  C["high_bg"]),
+        ("BACKGROUND",  (3,0), (3,-1),  C["med_bg"]),
+        ("BACKGROUND",  (4,0), (4,-1),  C["low_bg"]),
+        ("BACKGROUND",  (5,0), (5,-1),  C["info_bg"]),
+        ("LINEABOVE",   (0,0), (-1,0),  1.5, C["navy"]),
+        ("LINEBELOW",   (0,-1), (-1,-1), 1.5, C["navy"]),
+    ]))
+    story.append(risk_tbl)
+    story.append(Spacer(1, 1*cm))
+    story.append(hr(C["border"], 0.5, 4))
+    story.append(Paragraph(
+        "CONFIDENTIAL — This report contains sensitive security information. "
+        "Distribution should be limited to authorized personnel only.",
+        S("conf", fontSize=7.5, fontName="Helvetica-Oblique",
+          textColor=C["gray_mid"], alignment=TA_CENTER),
+    ))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 2 — TABLE OF CONTENTS
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(PageBreak())
+    story.append(Paragraph("Table of Contents", sty_h2))
+    story.append(hr(C["navy"], 1.5, 8))
     story.append(Spacer(1, 4*mm))
 
-    if scan["findings"] == 0:
-        story.append(Spacer(1, 4*mm))
-        story.append(Paragraph(
-            "No vulnerabilities detected during this scan.",
-            S("ok", fontSize=10, fontName="Helvetica-Bold", textColor=C["LOW"]),
+    toc_items = [
+        ("1.", "Executive Summary",              True),
+        ("  1.1", "Audit Scope",                 False),
+        ("  1.2", "Findings Summary",            False),
+        ("  1.3", "Risk Assessment",             False),
+        ("2.", "Methodology",                    True),
+        ("  2.1", "Testing Approach",            False),
+        ("  2.2", "OWASP API Top 10 Coverage",   False),
+        ("3.", "Detailed Findings",              True),
+        ("4.", "Recommendations",               True),
+    ]
+    for num, title, is_main in toc_items:
+        st = S("te", fontSize=11 if is_main else 9,
+               fontName="Helvetica-Bold" if is_main else "Helvetica",
+               textColor=C["navy"] if is_main else C["black"],
+               leading=20 if is_main else 16,
+               leftIndent=0 if is_main else 16,
+               spaceBefore=4 if is_main else 0)
+        # Dot leader line
+        story.append(Table(
+            [[Paragraph(f"{num}  {title}", st), Paragraph("", st)]],
+            colWidths=[W*0.85, W*0.15],
+            style=TableStyle([
+                ("LINEBELOW", (0,0), (0,0), 0.3, C["border"]) if not is_main else ("PADDING", (0,0), (0,0), 0),
+                ("PADDING",   (0,0), (-1,-1), 2),
+                ("VALIGN",    (0,0), (-1,-1), "BOTTOM"),
+            ]),
         ))
 
-    # ── Findings detail ───────────────────────────────────────────────────────
-    if findings_rows:
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 3 — EXECUTIVE SUMMARY
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(PageBreak())
+    story.append(Paragraph("1. Executive Summary", sty_h2))
+    story.append(hr(C["navy"], 1.5, 8))
+
+    story.append(Paragraph("1.1  Audit Scope", sty_h3))
+    story.append(_info_tbl([
+        ("Target URL",       _safe(scan["target"] or "—", 75)),
+        ("API Type",         scan["api_type"] or "—"),
+        ("Tests Run",        scan["tests"] or "all"),
+        ("Scan Date",        scan["created_at"][:19].replace("T", " ") + " UTC"),
+        ("Total Findings",   str(total)),
+        ("Scan Duration",    f"{scan['duration_sec'] or 0:.1f} s"),
+    ]))
+    story.append(Spacer(1, 6*mm))
+
+    story.append(Paragraph("1.2  Findings Summary", sty_h3))
+    weight_map = {"CRITICAL": 10, "HIGH": 5, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+    risk_desc  = {
+        "CRITICAL": "Immediate exploitation possible — requires urgent remediation",
+        "HIGH":     "Exploitation likely — high business impact",
+        "MEDIUM":   "Conditional exploitation — should be addressed",
+        "LOW":      "Difficult to exploit — low priority",
+        "INFO":     "Informational — no direct security impact",
+    }
+    hdr_row = [Paragraph(h, S("th", fontSize=8.5, fontName="Helvetica-Bold",
+                                textColor=colors.white))
+               for h in ["Severity", "Count", "Weight", "Description"]]
+    sev_rows = [hdr_row]
+    for sev in SEV_ORDER:
+        cnt = counts[sev]
+        fc  = C.get(sev, C["INFO"]) if cnt > 0 else C["gray_mid"]
+        fn  = "Helvetica-Bold" if cnt > 0 else "Helvetica"
+        sev_rows.append([
+            Paragraph(sev,                  S("sc", fontSize=8.5, fontName=fn, textColor=fc)),
+            Paragraph(str(cnt),             S("sn", fontSize=9,   fontName=fn, textColor=fc)),
+            Paragraph(str(weight_map[sev]), S("sw", fontSize=8,   fontName="Helvetica", textColor=C["gray_mid"])),
+            Paragraph(risk_desc[sev],       S("sr", fontSize=8,   fontName="Helvetica",
+                                               textColor=C["black"] if cnt > 0 else C["gray_mid"])),
+        ])
+    sev_tbl = Table(sev_rows, colWidths=[2.8*cm, 1.8*cm, 2*cm, W-6.6*cm])
+    sev_tbl.setStyle(TableStyle([
+        ("BACKGROUND",     (0,0), (-1,0),  C["navy"]),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, C["gray_table"]]),
+        ("GRID",           (0,0), (-1,-1), 0.4, C["border"]),
+        ("PADDING",        (0,0), (-1,-1), 7),
+        ("VALIGN",         (0,0), (-1,-1), "MIDDLE"),
+        ("FONTNAME",       (0,1), (0,-1),  "Helvetica-Bold"),
+        ("LINEABOVE",      (0,1), (-1,1),  1, C["navy"]),
+    ]))
+    story.append(sev_tbl)
+    story.append(Spacer(1, 6*mm))
+
+    story.append(Paragraph("1.3  Risk Assessment", sty_h3))
+    story.append(Paragraph(
+        f"The overall risk level is assessed as <b>{risk_label}</b> "
+        f"(composite risk score: <b>{risk_score}</b>). "
+        f"The scoring formula weights findings by severity: "
+        f"CRITICAL×10 + HIGH×5 + MEDIUM×2 + LOW×1.",
+        sty_body,
+    ))
+    if counts["CRITICAL"] > 0:
+        story.append(Spacer(1, 3*mm))
+        story.append(Paragraph(
+            f"⚠  {counts['CRITICAL']} CRITICAL finding(s) require immediate remediation.",
+            S("warn", fontSize=9, fontName="Helvetica-Bold",
+              textColor=C["CRITICAL"], leading=14),
+        ))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # METHODOLOGY
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(Spacer(1, 8*mm))
+    story.append(Paragraph("2. Methodology", sty_h2))
+    story.append(hr(C["navy"], 1.5, 8))
+
+    story.append(Paragraph("2.1  Testing Approach", sty_h3))
+    story.append(Paragraph(
+        "APISec applies a structured black-box testing methodology aligned with the "
+        "OWASP API Security Testing Guide. The audit proceeds in three phases: "
+        "(1) <b>Discovery</b> — API type detection, endpoint enumeration and schema extraction; "
+        "(2) <b>Scanning</b> — active vulnerability testing mapped to OWASP API Top 10 categories; "
+        "(3) <b>Reporting</b> — structured output with severity classification, OWASP/CWE mapping, "
+        "evidence and remediation guidance.",
+        sty_body,
+    ))
+    story.append(Spacer(1, 6*mm))
+
+    story.append(Paragraph("2.2  OWASP API Security Top 10 Coverage", sty_h3))
+
+    # Dynamic OWASP table
+    vuln_ids    = [f.get("vuln_id", "") for f in findings_list]
+    api_type_det = ("GraphQL" if any(v.startswith("GQL")  for v in vuln_ids) else
+                    "SOAP"    if any(v.startswith("SOAP") for v in vuln_ids) else "REST")
+    found_owasp = set()
+    for f in findings_list:
+        oval = f.get("owasp", "")
+        if ":" in oval:
+            found_owasp.add(oval.split(" ")[0])
+
+    OWASP_MAP = [
+        ("API1",  "Broken Object Level Authorization",
+         {"REST":"IDOR, path traversal","GraphQL":"IDOR via queries","SOAP":"BOLA/IDOR"},["API1:2023"]),
+        ("API2",  "Broken Authentication",
+         {"REST":"JWT attacks, rate limiting","GraphQL":"Mutation auth bypass","SOAP":"WS-Security bypass"},["API2:2023"]),
+        ("API3",  "Broken Object Property Level Auth",
+         {"REST":"Mass assignment, sensitive data","GraphQL":"Field exposure","SOAP":"SQLi, XPath"},["API3:2023"]),
+        ("API4",  "Unrestricted Resource Consumption",
+         {"REST":"Rate limiting","GraphQL":"Depth/alias/batch","SOAP":"XML DoS"},["API4:2023"]),
+        ("API5",  "Broken Function Level Authorization",
+         {"REST":"BFLA, HTTP method tampering","GraphQL":"Mutation auth bypass","SOAP":"SOAPAction spoofing"},["API5:2023"]),
+        ("API6",  "Unrestricted Access to Sensitive Flows",
+         {"REST":"Sensitive data exposure","GraphQL":"Field exposure","SOAP":"Fault disclosure"},["API6:2023"]),
+        ("API7",  "Server Side Request Forgery",
+         {"REST":"SSRF via URL parameters","GraphQL":"N/A","SOAP":"XXE-based SSRF"},["API7:2023"]),
+        ("API8",  "Security Misconfiguration",
+         {"REST":"CORS, headers, errors","GraphQL":"Introspection, CSRF","SOAP":"WSDL, XXE"},["API8:2023"]),
+        ("API9",  "Improper Inventory Management",
+         {"REST":"Exposed docs, debug endpoints","GraphQL":"Schema exposure","SOAP":"WSDL disclosure"},["API9:2023"]),
+        ("API10", "Unsafe Consumption of APIs",
+         {"REST":"SQLi, NoSQLi, XSS","GraphQL":"SQLi, NoSQLi","SOAP":"SQL/XML injection"},["API10:2023"]),
+    ]
+
+    o_hdr = [Paragraph(h, S("oh", fontSize=8.5, fontName="Helvetica-Bold", textColor=colors.white))
+             for h in ["ID", "Category", "Coverage", "Status"]]
+    o_rows = [o_hdr]
+    for api_id, cat, cov_map, tags in OWASP_MAP:
+        cov      = cov_map.get(api_type_det, "N/A")
+        is_vuln  = any(any(t in oval for t in tags) for oval in found_owasp)
+        o_rows.append([
+            Paragraph(api_id, S("oi", fontSize=8, fontName="Helvetica-Bold", textColor=C["navy"])),
+            Paragraph(cat,    S("oc", fontSize=8, fontName="Helvetica",      textColor=C["black"])),
+            Paragraph(cov,    S("ov", fontSize=8, fontName="Helvetica",      textColor=C["gray_dark"])),
+            Paragraph(
+                "VULNERABLE" if is_vuln else "Not Detected",
+                S("os", fontSize=8, fontName="Helvetica-Bold" if is_vuln else "Helvetica",
+                  textColor=C["CRITICAL"] if is_vuln else C["LOW"]),
+            ),
+        ])
+
+    o_tbl = Table(o_rows, colWidths=[1.6*cm, 5.2*cm, 4.2*cm, 2.5*cm])
+    o_tbl.setStyle(TableStyle([
+        ("BACKGROUND",     (0,0), (-1,0),  C["navy"]),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, C["gray_table"]]),
+        ("GRID",           (0,0), (-1,-1), 0.4, C["border"]),
+        ("PADDING",        (0,0), (-1,-1), 6),
+        ("VALIGN",         (0,0), (-1,-1), "MIDDLE"),
+        ("LINEABOVE",      (0,1), (-1,1),  1, C["navy"]),
+    ]))
+    story.append(o_tbl)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FINDINGS DETAIL
+    # ══════════════════════════════════════════════════════════════════════════
+    if findings_list:
         story.append(PageBreak())
-        story.append(Paragraph("Findings Detail", style_h2))
-        story.append(hr(thick=1.5, space_after=6))
+        story.append(Paragraph("3. Detailed Findings", sty_h2))
+        story.append(hr(C["navy"], 1.5, 8))
         story.append(Spacer(1, 2*mm))
 
-        for i, f in enumerate([dict(r) for r in findings_rows], 1):
+        for i, f in enumerate(findings_list, 1):
             sev   = (f.get("severity") or "INFO").upper()
-            color = C.get(sev, C["INFO"])
+            fcol  = C.get(sev, C["INFO"])
+            fbg   = SEV_BG.get(sev, colors.white)
 
-            # Finding header row
+            # Finding header
             hdr = Table([[
                 Paragraph(f"#{i:02d}",
-                    S("fn", fontSize=9, fontName="Helvetica-Bold", textColor=C["accent"])),
+                    S("fn", fontSize=10, fontName="Helvetica-Bold", textColor=C["navy"])),
                 Paragraph(f"[{sev}]",
-                    S("fs", fontSize=9, fontName="Helvetica-Bold", textColor=color)),
+                    S("fs", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white)),
                 Paragraph(f.get("vuln_id") or "—",
-                    S("fi", fontSize=8, fontName="Courier", textColor=C["dim"])),
+                    S("fi", fontSize=8.5, fontName="Courier", textColor=colors.white)),
                 Paragraph(_safe(f.get("vuln_type") or "Unknown", 60),
-                    S("ft", fontSize=9, fontName="Helvetica-Bold", textColor=C["text"])),
-            ]], colWidths=[1.2*cm, 2*cm, 2.8*cm, W - 6*cm])
+                    S("ft", fontSize=10, fontName="Helvetica-Bold", textColor=colors.white)),
+            ]], colWidths=[1.3*cm, 2.2*cm, 2.8*cm, W-6.3*cm])
             hdr.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#111827")),
-                ("LINEBELOW",  (0,0), (-1,-1), 2, color),
-                ("PADDING",    (0,0), (-1,-1), 6),
-                ("VALIGN",     (0,0), (-1,-1), "MIDDLE"),
+                ("BACKGROUND",  (0,0), (0,0),  C["gray_light"]),
+                ("BACKGROUND",  (1,0), (-1,-1), fcol),
+                ("GRID",        (0,0), (-1,-1), 0.5, fcol),
+                ("PADDING",     (0,0), (-1,-1), 7),
+                ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+                ("TEXTCOLOR",   (0,0), (0,0),   C["navy"]),
             ]))
 
-            # Detail rows — no truncation on description/solution
-            detail_rows = [
+            # Detail table
+            detail_data = [
                 ("Endpoint",    _safe(f.get("endpoint"),    90)),
                 ("Method",      _safe(f.get("method"),      20)),
                 ("OWASP",       _safe(f.get("owasp"),       80)),
                 ("CWE",         _safe(f.get("cwe"),         20)),
                 ("Confidence",  _safe(f.get("confidence"),  20)),
-                ("Parameter",   _safe(f.get("parameter"),   200)),
-                ("Payload",     _safe(f.get("payload"),     300)),
-                ("Evidence",    _safe(f.get("evidence"),    400)),
-                ("Description", _safe(f.get("description"), 1000)),
-                ("Solution",    _safe(f.get("solution"),    1000)),
-                ("Reference",   _safe(f.get("reference"),   200)),
+                ("Parameter",   _safe(f.get("parameter"),   300)),
+                ("Payload",     _safe(f.get("payload"),     400)),
+                ("Evidence",    _safe(f.get("evidence"),    600)),
+                ("Description", _safe(f.get("description"), 1500)),
+                ("Solution",    _safe(f.get("solution"),    1500)),
+                ("Reference",   _safe(f.get("reference"),   300)),
             ]
-            detail_rows = [(k, v) for k, v in detail_rows if v and v != "—"]
+            detail_data = [(k, v) for k, v in detail_data if v and v != "—"]
 
-            dt_rows = []
-            for k, v in detail_rows:
-                use_mono = k in ("Payload", "Evidence", "Reference")
-                dt_rows.append([
-                    Paragraph(k, style_label),
-                    Paragraph(v, style_mono if use_mono else style_body),
-                ])
-
-            dt = Table(dt_rows, colWidths=[2.5*cm, W - 2.5*cm])
+            dt = Table(
+                [[Paragraph(k, sty_label),
+                  Paragraph(v, sty_mono if k in ("Payload","Evidence","Reference") else sty_body)]
+                 for k, v in detail_data],
+                colWidths=[2.5*cm, W-2.5*cm],
+            )
             dt.setStyle(TableStyle([
-                ("ROWBACKGROUNDS", (0,0), (-1,-1), [colors.HexColor("#0a0e1a"), C["row1"]]),
-                ("GRID",           (0,0), (-1,-1), 0.2, C["border"]),
-                ("PADDING",        (0,0), (-1,-1), 5),
+                ("ROWBACKGROUNDS", (0,0), (-1,-1), [colors.white, C["gray_table"]]),
+                ("GRID",           (0,0), (-1,-1), 0.3, C["border"]),
+                ("PADDING",        (0,0), (-1,-1), 6),
                 ("VALIGN",         (0,0), (-1,-1), "TOP"),
-                ("LEFTPADDING",    (0,0), (0,-1),  8),
+                ("LINEBELOW",      (0,-1), (-1,-1), 1, fcol),
             ]))
 
-            # KeepTogether prevents orphan headers at page bottom
             story.append(KeepTogether([hdr, dt]))
-            story.append(Spacer(1, 4*mm))
+            story.append(Spacer(1, 5*mm))
 
-    # ── Footer ────────────────────────────────────────────────────────────────
-    story.append(Spacer(1, 8*mm))
-    story.append(hr(C["dim"], 0.5, 4))
+    # ══════════════════════════════════════════════════════════════════════════
+    # RECOMMENDATIONS
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(PageBreak())
+    story.append(Paragraph("4. Recommendations", sty_h2))
+    story.append(hr(C["navy"], 1.5, 8))
+
+    if findings_list:
+        story.append(Paragraph("4.1  Priority Remediation Plan", sty_h3))
+        for i, f in enumerate(findings_list, 1):
+            sev  = (f.get("severity") or "INFO").upper()
+            fcol = C.get(sev, C["INFO"])
+            sol  = _safe(f.get("solution") or "Review and apply security best practices.", 600)
+            story.append(KeepTogether([
+                Paragraph(
+                    f"<b>{i}. [{sev}]  {f.get('vuln_type') or 'Unknown'}</b>"
+                    f"  <font color='#{'718096'}'>{f.get('vuln_id') or ''}</font>",
+                    S("rh", fontSize=9.5, fontName="Helvetica-Bold",
+                      textColor=fcol, spaceBefore=8, spaceAfter=3),
+                ),
+                Paragraph(sol, sty_body),
+                Spacer(1, 2*mm),
+            ]))
+
+    story.append(Spacer(1, 6*mm))
+    story.append(Paragraph("4.2  Security Best Practices", sty_h3))
+    for bp in [
+        "Enforce authentication and object-level authorization on every API endpoint.",
+        "Use parameterized queries exclusively — never interpolate user input into SQL/NoSQL queries.",
+        "Implement rate limiting and query complexity analysis to prevent denial-of-service attacks.",
+        "Return generic error messages in production — never expose stack traces, file paths or framework details.",
+        "Maintain an up-to-date inventory of all API endpoints and disable all unused ones.",
+        "Enforce HTTPS, configure strict CORS policies and all security response headers.",
+        "Integrate automated API security testing (APISec) into your CI/CD pipeline.",
+        "Re-run a full audit after every major API change or new feature deployment.",
+    ]:
+        story.append(Paragraph(
+            f"<bullet>•</bullet>  {bp}",
+            S("bp", fontSize=9, fontName="Helvetica", textColor=C["black"],
+              leading=15, leftIndent=12, spaceBefore=2),
+        ))
+
+    # ── Footer page ────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 1*cm))
+    story.append(hr(C["border"], 0.5, 4))
     story.append(Paragraph(
-        f"Generated by APISec v2.1 — API Security Audit Tool — {_now_iso()} UTC",
-        style_center,
+        f"Generated by APISec v2.1 — Automated API Security Audit Tool — {_now_iso()} UTC",
+        sty_center,
     ))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
     buf.seek(0)
     fname = f"apisec_report_{scan_id[:8]}_{datetime.now().strftime('%Y%m%d')}.pdf"
     return send_file(buf, mimetype="application/pdf",
