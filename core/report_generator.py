@@ -71,7 +71,11 @@ def _esc_url(url: str) -> str:
     """Escape URL for use in LaTeX url or href commands."""
     if not url:
         return ""
-    return url.replace("%", r"\%").replace("#", r"\#").replace("_", r"\_")
+    # Truncate very long URLs for display (keep first 70 chars + ...)
+    display = url
+    if len(url) > 70:
+        display = url[:67] + "..."
+    return display.replace("%", r"\%").replace("#", r"\#").replace("_", r"\_")
 
 
 def _verbatim(text: str) -> str:
@@ -181,6 +185,8 @@ def _render_tex(
 \usepackage{tabularx}
 \usepackage{multirow}
 \usepackage{amsmath}
+\usepackage{seqsplit}
+\usepackage{xurl}
 \usepackage{tcolorbox}
 \tcbuselibrary{skins,breakable}
 
@@ -203,6 +209,7 @@ def _render_tex(
     urlcolor     = APIsecAccent,
     citecolor    = APIsecBlue,
     pdftitle     = {APISec Security Report},
+    breaklinks   = true,
     pdfauthor    = {APISec},
 }
 
@@ -273,7 +280,7 @@ def _render_tex(
 \begin{tcolorbox}[colback=APIsecBlue!8, colframe=APIsecBlue, width=0.85\textwidth,
                   left=12pt, right=12pt, top=10pt, bottom=10pt]
 \begin{tabular}{@{}ll}
-\textbf{Target URL}  & \texttt{""" + _esc_url(target_url) + r"""} \\[4pt]
+\textbf{Target URL}  & {\small\ttfamily\url{""" + target_url + r"""}} \\[4pt]
 \textbf{API Type}    & """ + _esc(api_type) + r""" \\[4pt]
 \textbf{Scan Date}   & """ + _esc(scan_date) + r""" \\[4pt]
 \textbf{Author}      & """ + _esc(author) + r""" \\[4pt]
@@ -361,7 +368,7 @@ and access control verification.
 \toprule
 \textbf{Parameter} & \textbf{Value} \\
 \midrule
-Target URL   & \texttt{""" + _esc_url(target_url) + r"""} \\
+Target URL   & {\small\ttfamily\url{""" + target_url + r"""}} \\
 API Type     & """ + _esc(api_type) + r""" \\
 Scan Date    & """ + _esc(scan_date) + r""" \\
 Total Findings & """ + str(stats["total"]) + r""" \\
@@ -518,15 +525,15 @@ ordered by severity.
             )
 
             tex += r"""
-\begin{tabular}{@{}p{3cm}p{11cm}}
+\begin{tabularx}{\linewidth}{@{}p{3cm}X}
 \textbf{Finding \#} & """ + str(finding_num) + r""" \\
-\textbf{Endpoint}   & \texttt{""" + endpoint + r"""} \\
+\textbf{Endpoint}   & {\small\ttfamily """ + endpoint + r"""} \\
 \textbf{Method}     & \texttt{""" + method + r"""} \\
 \textbf{Parameter}  & \texttt{""" + parameter + r"""} \\
 \textbf{OWASP}      & """ + owasp + r""" \\
 \textbf{CWE}        & """ + cwe + r""" \\
 \textbf{Confidence} & """ + conf + r""" \\
-\end{tabular}
+\end{tabularx}
 
 \medskip
 \textbf{Description:}
