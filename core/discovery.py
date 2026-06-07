@@ -996,10 +996,36 @@ class APIDiscovery:
             if ep_url not in self.endpoints:
                 self.endpoints.append(ep_url)
 
+            # Boost confidence when schema is fully retrieved.
+            # A recovered schema is absolute proof of GraphQL — override
+            # the score-based estimate which can be low on non-standard paths.
+            BUILTIN_SCALARS = {"String", "Int", "Float", "Boolean", "ID"}
+            all_types  = gql_schema.get("types", []) if gql_schema else []
+            real_types = [
+                t for t in all_types
+                if isinstance(t, dict)
+                and t.get("name")
+                and not t["name"].startswith("__")
+                and t["name"] not in BUILTIN_SCALARS
+            ]
+            has_schema = bool(
+                schema_result.queries
+                or schema_result.mutations
+                or real_types
+            )
+            if has_schema:
+                detection.confidence = 0.98
+                detection.score      = max(detection.score, 11)
+                if "Schema fully recovered" not in detection.reasons:
+                    detection.reasons.append(
+                        f"Schema fully recovered via {schema_result.method}"
+                    )
+
             logger.info(
                 f"[+] GraphQL schema — method: {schema_result.method} | "
                 f"queries: {len(schema_result.queries)} | "
-                f"mutations: {len(schema_result.mutations)}"
+                f"mutations: {len(schema_result.mutations)} | "
+                f"types: {len(real_types)} user-defined"
             )
 
         elif detection.api_type == "SOAP":
