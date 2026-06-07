@@ -1057,14 +1057,14 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
 
     # Risk level + severity badges in one table
     risk_data = [
-        [Paragraph("Overall Risk Level", S("rlt", fontSize=9, fontName="Helvetica-Bold",
+        [Paragraph("Overall Risk Level", S("rlt", fontSize=7, fontName="Helvetica-Bold",
                    textColor=C["gray_dark"], alignment=TA_CENTER))] +
-        [Paragraph(s, S("st", fontSize=7, fontName="Helvetica-Bold",
+        [Paragraph(s, S("st", fontSize=6, fontName="Helvetica-Bold",
                          textColor=C.get(s, C["INFO"]), alignment=TA_CENTER))
          for s in SEV_ORDER],
-        [Paragraph(risk_label, S("rlv", fontSize=16, fontName="Helvetica-Bold",
+        [Paragraph(risk_label, S("rlv", fontSize=11, fontName="Helvetica-Bold",
                    textColor=risk_col, alignment=TA_CENTER))] +
-        [Paragraph(str(counts[s]), S("sv", fontSize=14, fontName="Helvetica-Bold",
+        [Paragraph(str(counts[s]), S("sv", fontSize=11, fontName="Helvetica-Bold",
                    textColor=C.get(s, C["INFO"]) if counts[s] > 0 else C["border"],
                    alignment=TA_CENTER))
          for s in SEV_ORDER],
@@ -1076,7 +1076,7 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
     bg_row2 = [SEV_BG.get(s, colors.white) for s in SEV_ORDER]
     risk_tbl.setStyle(TableStyle([
         ("GRID",        (0,0), (-1,-1), 0.4, C["border"]),
-        ("PADDING",     (0,0), (-1,-1), 10),
+        ("PADDING",     (0,0), (-1,-1), 5),
         ("ALIGN",       (0,0), (-1,-1), "CENTER"),
         ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
         ("BACKGROUND",  (0,0), (0,-1),  C["gray_light"]),
