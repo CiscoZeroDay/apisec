@@ -1296,15 +1296,25 @@ class GraphQLScanner:
             return {}
 
     def _resolve_endpoints(self, endpoints: list[str]) -> list[str]:
-        keywords = ("graphql", "gql", "query", "graph")
-        matched  = [
-            ep for ep in endpoints
-            if any(kw in ep.lower() for kw in keywords)
-        ]
-        if not matched:
-            logger.debug("[GraphQL] No GQL endpoints — probing common paths")
-            return [f"{self.base_url}{p}" for p in GRAPHQL_ENDPOINTS]
-        return matched
+        """
+        Return GraphQL-capable endpoints to scan.
+
+        Priority:
+          1. Endpoints passed in → always trusted (already confirmed by discovery)
+          2. Common path probing → only when endpoints list is empty
+
+        Rationale:
+          Discovery already validated these endpoints as GraphQL — no need to
+          filter by keyword or replace with hardcoded candidates. Doing so was
+          the source of false positives (e.g. /api confirmed as GraphQL but
+          filtered out because it doesn't contain 'graphql'/'gql'/'query').
+        """
+        if endpoints:
+            return endpoints
+
+        # No endpoints at all → probe common paths as last resort
+        logger.debug("[GraphQL] No endpoints provided — probing common paths")
+        return [f"{self.base_url}{p}" for p in GRAPHQL_ENDPOINTS]
 
     def _build_idor_candidates(self) -> list[tuple[str, str, str]]:
         candidates: list[tuple[str, str, str]] = []
