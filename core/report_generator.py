@@ -308,8 +308,7 @@ def _render_tex(
                   left=8pt, right=8pt, top=6pt, bottom=6pt]
 \centering
 {\large\bfseries Overall Risk Level}\\[4pt]
-{\Huge\bfseries\color{""" + risk_color + r"""} """ + _esc(stats["risk_label"]) + r"""}\\[2pt]
-{\small Risk Score: """ + str(stats["risk"]) + r"""}
+{\Huge\bfseries\color{""" + risk_color + r"""} """ + _esc(stats["risk_label"]) + r"""}
 \end{tcolorbox}
 
 \vspace{2em}
@@ -331,8 +330,8 @@ def _render_tex(
         color = sev_colors[sev]
         tex += (
             r"\begin{tcolorbox}[colback=" + color + r"!12, colframe=" + color +
-            r", width=1.8cm, nobeforeafter, box align=top, left=2pt, right=2pt]"
-            r"\centering{\footnotesize\bfseries " + sev + r"}\\{\Large\bfseries\color{" +
+            r", width=2.1cm, nobeforeafter, box align=top, left=2pt, right=2pt, top=3pt, bottom=3pt]"
+            r"\centering{\fontsize{6}{7}\selectfont\bfseries " + sev + r"}\\[2pt]{\large\bfseries\color{" +
             color + r"} " + str(count) + r"}\end{tcolorbox} & "
         )
     # Remove last " & " and close tabular
