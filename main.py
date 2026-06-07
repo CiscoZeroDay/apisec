@@ -1180,14 +1180,12 @@ def cmd_report(args) -> None:
         sys.exit(1)
 
     discovery_path = getattr(args, "discovery", None)
-    author         = getattr(args, "author", "Security Analyst") or "Security Analyst"
     output_path    = args.output or "apisec_report.pdf"
 
     print(f"[->] Generating PDF report from '{args.input}'...")
     if discovery_path:
         print(f"[->] Discovery context : '{discovery_path}'")
     print(f"[->] Output            : '{output_path}'")
-    print(f"[->] Author            : {author}")
     print()
 
     try:
@@ -1195,7 +1193,6 @@ def cmd_report(args) -> None:
             scan_results_path = args.input,
             output_path       = output_path,
             discovery_path    = discovery_path,
-            author            = author,
         )
         print(f"[+] Report generated successfully: {result}")
         print()
@@ -1342,8 +1339,6 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
                    help="scan_results.json from apisec scan")
     p.add_argument("--discovery",  default=None,
                    help="endpoints.json from discovery (for target URL and API type)")
-    p.add_argument("--author",     default="Security Analyst",
-                   help="Report author name (default: Security Analyst)")
     p.set_defaults(func=cmd_report)
 
     return parser

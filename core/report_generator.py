@@ -753,7 +753,7 @@ def generate_report(
     scan_results_path:  str,
     output_path:        str,
     discovery_path:     Optional[str] = None,
-    author:             str           = "Security Analyst",
+    author:             str           = "APISec Audit Tool — Automation of API Security Audit",
 ) -> str:
     """
     Generate a LaTeX-style PDF security report.
@@ -773,6 +773,24 @@ def generate_report(
 
     if not findings:
         raise ValueError(f"No findings found in '{scan_results_path}'.")
+
+    # Auto-detect target URL and API type from scan results
+    # if discovery file not provided or missing fields
+    if not discovery.get("target_url") and findings:
+        from urllib.parse import urlparse
+        first_ep = findings[0].get("endpoint", "")
+        parsed   = urlparse(first_ep)
+        if parsed.scheme and parsed.netloc:
+            discovery["target_url"] = f"{parsed.scheme}://{parsed.netloc}"
+
+    if not discovery.get("api_type") and findings:
+        first_id = findings[0].get("vuln_id", "").upper()
+        if first_id.startswith("GQL"):
+            discovery["api_type"] = "GraphQL"
+        elif any(first_id.startswith(p) for p in ("SOAP", "XXE", "WSDL")):
+            discovery["api_type"] = "SOAP"
+        else:
+            discovery["api_type"] = "REST"
 
     tex = _render_tex(
         findings  = findings,
