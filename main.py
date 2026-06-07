@@ -1169,6 +1169,50 @@ def _common_args() -> argparse.ArgumentParser:
     return p
 
 
+
+def cmd_report(args) -> None:
+    """
+    apisec report --input scan_results.json [--discovery endpoints.json] [--output report.pdf] [--author "Name"]
+    """
+    from core.report_generator import generate_report
+
+    if not validate_input_file(args.input):
+        sys.exit(1)
+
+    discovery_path = getattr(args, "discovery", None)
+    author         = getattr(args, "author", "Security Analyst") or "Security Analyst"
+    output_path    = args.output or "apisec_report.pdf"
+
+    print(f"[->] Generating PDF report from '{args.input}'...")
+    if discovery_path:
+        print(f"[->] Discovery context : '{discovery_path}'")
+    print(f"[->] Output            : '{output_path}'")
+    print(f"[->] Author            : {author}")
+    print()
+
+    try:
+        result = generate_report(
+            scan_results_path = args.input,
+            output_path       = output_path,
+            discovery_path    = discovery_path,
+            author            = author,
+        )
+        print(f"[+] Report generated successfully: {result}")
+        print()
+        print("  Open with:")
+        print(f"    xdg-open {result}")
+        print(f"    evince  {result}")
+        print()
+    except FileNotFoundError as e:
+        print(f"[!] File not found: {e}")
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"[!] Report generation failed:\n{e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"[!] Unexpected error: {e}")
+        sys.exit(1)
+
 def build_parser() -> argparse.ArgumentParser:
     common = _common_args()
 
@@ -1290,6 +1334,18 @@ Available GQL tests : {", ".join(ALL_GQL_TESTS)}
     p.add_argument("--swagger-file",     default="swagger_captured.yaml", dest="swagger_file",
                    help="Intermediate OpenAPI spec file (default: swagger_captured.yaml)")
     p.set_defaults(func=cmd_capture)
+
+    # report
+    p = subs.add_parser("report", parents=[common],
+                        help="Generate a PDF security report from scan results")
+    p.add_argument("--input",      required=True,
+                   help="scan_results.json from apisec scan")
+    p.add_argument("--discovery",  default=None,
+                   help="endpoints.json from discovery (for target URL and API type)")
+    p.add_argument("--author",     default="Security Analyst",
+                   help="Report author name (default: Security Analyst)")
+    p.set_defaults(func=cmd_report)
+
     return parser
 
 
