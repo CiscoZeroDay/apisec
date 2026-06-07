@@ -1240,7 +1240,23 @@ class GraphQLScanner:
         return endpoint.replace(self.base_url, "") or "/"
 
     def _gql_post(self, path: str, query: str):
-        return self.http.post(path, json={"query": query})
+        """
+        Send a GraphQL query — POST first, GET fallback if 405.
+
+        PATCH: Some servers only accept GET requests for GraphQL queries.
+        PortSwigger Lab 3: POST /api → 405 Method Not Allowed
+                           GET  /api?query=... → 200 OK
+
+        All tests use _gql_post() so GET-only endpoints are handled
+        transparently without changing any individual test logic.
+        """
+        r = self.http.post(path, json={"query": query})
+
+        # GET fallback — POST rejected with 405 (Method Not Allowed)
+        if r is None or r.status_code == 405:
+            r = self.http.get(path, params={"query": query})
+
+        return r
 
     def _is_gql_response(self, r) -> bool:
         if r is None or r.status_code not in (200, 400):
