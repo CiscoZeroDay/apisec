@@ -488,15 +488,30 @@ class GraphQLScanner:
 
         if self._schema_state.status == SchemaStatus.AVAILABLE_FROM_DISCOVERY:
             types_count = len(self._schema_state.get_types())
+
+            # Resolve the real HTTP method used during discovery.
+            # discovery.py stores the method in schema["method"] e.g.
+            # "bypass_newline_get" -> GET, "post" -> POST.
+            disc_method = ""
+            if isinstance(self._schema_state.gql_schema, dict):
+                disc_method = self._schema_state.gql_schema.get("method", "").lower()
+
+            if "get" in disc_method:
+                real_method  = "GET"
+                real_payload = f"GET {path}?query={INTROSPECTION_PROBE}"
+            else:
+                real_method  = "POST"
+                real_payload = INTROSPECTION_PROBE
+
             logger.info(f"    [VULN] GQL-S1 Introspection exposed → {endpoint}")
             return [_vuln(
                 name     = "introspection",
                 endpoint = endpoint,
-                method   = "POST",
-                payload  = INTROSPECTION_PROBE,
+                method   = real_method,
+                payload  = real_payload,
                 evidence = (
                     f"Introspection active — {types_count} types exposed "
-                    f"(schema pre-fetched during discovery)"
+                    f"(schema pre-fetched during discovery via {disc_method or 'unknown'})"
                 ),
             )]
 
