@@ -962,9 +962,9 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
         return ParagraphStyle(f"{name}_{_uid}_{_ctr[0]}", **kw)
 
     # ── Styles ────────────────────────────────────────────────────────────────
-    sty_title   = S("title",  fontSize=36, fontName="Helvetica-Bold",
-                               textColor=colors.white, alignment=TA_CENTER, leading=42)
-    sty_sub     = S("sub",    fontSize=14, fontName="Helvetica",
+    sty_title   = S("title",  fontSize=26, fontName="Helvetica-Bold",
+                               textColor=colors.white, alignment=TA_CENTER, leading=32)
+    sty_sub     = S("sub",    fontSize=11, fontName="Helvetica",
                                textColor=colors.HexColor("#A8D8EA"), alignment=TA_CENTER)
     sty_h2      = S("h2",     fontSize=14, fontName="Helvetica-Bold",
                                textColor=C["navy"], spaceBefore=16, spaceAfter=6)
@@ -1029,9 +1029,24 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
 
     # Meta info
     target_str = _safe(scan["target"] or "—", 75)
+    # Use detected API type from findings if scan was AUTO
+    vuln_ids_early = []
+    try:
+        import json as _json
+        raw_results = scan["results_json"] or "[]"
+        early_findings = _json.loads(raw_results)
+        vuln_ids_early = [f.get("vuln_id", "") for f in early_findings if isinstance(f, dict)]
+    except Exception:
+        pass
+    detected_api_type = scan["api_type"] or "—"
+    if detected_api_type == "AUTO":
+        if any(v.startswith("GQL")  for v in vuln_ids_early): detected_api_type = "GraphQL (auto-detected)"
+        elif any(v.startswith("SOAP") for v in vuln_ids_early): detected_api_type = "SOAP (auto-detected)"
+        elif vuln_ids_early: detected_api_type = "REST (auto-detected)"
+
     story.append(_info_tbl([
         ("Target URL",  target_str),
-        ("API Type",    scan["api_type"] or "—"),
+        ("API Type",    detected_api_type),
         ("Scan Status", scan["status"].upper()),
         ("Date",        scan["created_at"][:19].replace("T", " ") + " UTC"),
         ("Duration",    f"{scan['duration_sec'] or 0:.1f} s"),
@@ -1044,12 +1059,12 @@ def report_pdf(scan_id: str) -> tuple[Response, int]:
     risk_data = [
         [Paragraph("Overall Risk Level", S("rlt", fontSize=9, fontName="Helvetica-Bold",
                    textColor=C["gray_dark"], alignment=TA_CENTER))] +
-        [Paragraph(s, S("st", fontSize=8, fontName="Helvetica-Bold",
+        [Paragraph(s, S("st", fontSize=7, fontName="Helvetica-Bold",
                          textColor=C.get(s, C["INFO"]), alignment=TA_CENTER))
          for s in SEV_ORDER],
-        [Paragraph(risk_label, S("rlv", fontSize=20, fontName="Helvetica-Bold",
+        [Paragraph(risk_label, S("rlv", fontSize=16, fontName="Helvetica-Bold",
                    textColor=risk_col, alignment=TA_CENTER))] +
-        [Paragraph(str(counts[s]), S("sv", fontSize=18, fontName="Helvetica-Bold",
+        [Paragraph(str(counts[s]), S("sv", fontSize=14, fontName="Helvetica-Bold",
                    textColor=C.get(s, C["INFO"]) if counts[s] > 0 else C["border"],
                    alignment=TA_CENTER))
          for s in SEV_ORDER],
