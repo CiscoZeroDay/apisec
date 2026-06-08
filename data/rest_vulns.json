@@ -8,7 +8,7 @@
   "CORS-001": {
     "id": "CORS-001",
     "label": "Reflected Origin CORS Misconfiguration",
-    "severity": "HIGH",
+    "severity": "MEDIUM",
     "confidence": "HIGH",
     "owasp": "API8:2023 - Security Misconfiguration",
     "cwe": "CWE-942",
@@ -21,7 +21,7 @@
     "id": "CORS-002",
     "label": "Wildcard CORS with Credentials Enabled",
     "severity": "CRITICAL",
-    "confidence": "HIGH",
+    "confidence": "MEDIUM",
     "owasp": "API8:2023 - Security Misconfiguration",
     "cwe": "CWE-942",
     "impact": "Complete authentication bypass — attacker receives victim's authenticated session cookies and tokens.",
@@ -45,7 +45,7 @@
     "id": "HDR-001",
     "label": "Missing Strict-Transport-Security (HSTS)",
     "severity": "MEDIUM",
-    "confidence": "HIGH",
+    "confidence": "MEDIUM",
     "owasp": "API8:2023 - Security Misconfiguration",
     "cwe": "CWE-319",
     "impact": "Browsers may connect over plain HTTP, exposing credentials and tokens to network interception.",
@@ -68,7 +68,7 @@
   "HDR-003": {
     "id": "HDR-003",
     "label": "Missing X-Frame-Options",
-    "severity": "MEDIUM",
+    "severity": "LOW",
     "confidence": "HIGH",
     "owasp": "API8:2023 - Security Misconfiguration",
     "cwe": "CWE-1021",
@@ -80,7 +80,7 @@
   "HDR-004": {
     "id": "HDR-004",
     "label": "Missing Content-Security-Policy (CSP)",
-    "severity": "MEDIUM",
+    "severity": "LOW",
     "confidence": "HIGH",
     "owasp": "API8:2023 - Security Misconfiguration",
     "cwe": "CWE-693",
@@ -116,7 +116,7 @@
   "VERB-001": {
     "id": "VERB-001",
     "label": "HTTP TRACE Method Enabled",
-    "severity": "MEDIUM",
+    "severity": "LOW",
     "confidence": "MEDIUM",
     "owasp": "API8:2023 - Security Misconfiguration",
     "cwe": "CWE-16",
@@ -128,7 +128,7 @@
   "ERR-001": {
     "id": "ERR-001",
     "label": "Verbose Error / Stack Trace Exposure",
-    "severity": "MEDIUM",
+    "severity": "LOW",
     "confidence": "HIGH",
     "owasp": "API8:2023 - Security Misconfiguration",
     "cwe": "CWE-209",
@@ -140,7 +140,7 @@
   "AUTH-001": {
     "id": "AUTH-001",
     "label": "Endpoint Accessible Without Authentication Token",
-    "severity": "HIGH",
+    "severity": "MEDIUM",
     "confidence": "HIGH",
     "owasp": "API2:2023 - Broken Authentication",
     "cwe": "CWE-306",
@@ -164,7 +164,7 @@
   "AUTH-003": {
     "id": "AUTH-003",
     "label": "JWT 'none' Algorithm Accepted",
-    "severity": "CRITICAL",
+    "severity": "HIGH",
     "confidence": "HIGH",
     "owasp": "API2:2023 - Broken Authentication",
     "cwe": "CWE-347",
@@ -176,7 +176,7 @@
   "AUTH-004": {
     "id": "AUTH-004",
     "label": "JWT Algorithm Confusion (RS256 -> HS256)",
-    "severity": "CRITICAL",
+    "severity": "HIGH",
     "confidence": "HIGH",
     "owasp": "API2:2023 - Broken Authentication",
     "cwe": "CWE-347",
