@@ -140,6 +140,20 @@ class Requester:
         """Supprime un header personnalisé de la session."""
         self._session.headers.pop(key, None)
 
+    def set_cookie(self, cookie: str) -> None:
+        """
+        Injecte un Cookie header pour toute la session.
+
+        Args:
+            cookie : Cookie string (e.g. 'session=abc123; csrf=xyz456')
+        """
+        if cookie:
+            self._session.headers.update({"Cookie": cookie})
+
+    def clear_cookie(self) -> None:
+        """Supprime le Cookie header de la session."""
+        self._session.headers.pop("Cookie", None)
+
     # =========================================================================
     #  Méthode interne — logique commune à tous les verbes
     # =========================================================================
