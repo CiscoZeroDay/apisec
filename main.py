@@ -42,7 +42,7 @@ VERSION = "1.0"
 # REST tests — passed to RESTScanner
 ALL_REST_TESTS: list[str] = [
     "misconfig", "auth", "sqli", "blind_sqli",
-    "nosql", "xss", "idor", "ssrf","bfla",
+    "nosql", "xss", "idor", "ssrf","bflaw",
     "mass_assign", "rate_limit","inventory","sensitive"
 ]
 
