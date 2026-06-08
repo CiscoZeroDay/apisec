@@ -1072,8 +1072,15 @@ class APIDiscovery:
             self.tech_stack = list(dict.fromkeys(self.tech_stack))
 
         else:
-            limit = 50 if mode == "quick" else None
-            self.crawl_endpoints(wordlist_path, limit=limit)
+            # Skip crawl if Swagger already confirmed REST endpoints
+            if swagger_found and self.api_type == "REST":
+                logger.info(
+                    f"[*] Crawl skipped — REST confirmed via Swagger/OpenAPI "
+                    f"({len(swagger_found)} endpoint(s) already extracted)"
+                )
+            else:
+                limit = 50 if mode == "quick" else None
+                self.crawl_endpoints(wordlist_path, limit=limit)
 
             if detection.api_type == "Unknown" and len(self.endpoints) > 0:
                 if self.api_type in ("GraphQL", "SOAP"):
