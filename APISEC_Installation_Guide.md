@@ -1,4 +1,4 @@
-# APISec — Installation and Configuration Guide
+# APISec - Installation and Configuration Guide
 
 **Version:** 1.0  
 **Author:** RAZAFINDRAIBE Hery Jhonny  
@@ -37,7 +37,7 @@ Before installing APISec, ensure the following requirements are met on your syst
 
 ## 2. Installation on Windows
 
-### Step 1 — Install Python 3.13
+### Step 1 - Install Python 3.13
 
 Download the Python 3.13 installer from https://www.python.org/downloads/ and run it.  
 Ensure the option **"Add Python to PATH"** is checked before proceeding with the installation.
@@ -50,14 +50,14 @@ python --version
 
 Expected output: `Python 3.13.x`
 
-### Step 2 — Clone the Repository
+### Step 2 - Clone the Repository
 
 ```
 git clone https://github.com/CiscoZeroDay/apisec.git
 cd apisec
 ```
 
-### Step 3 — Create a Virtual Environment
+### Step 3 - Create a Virtual Environment
 
 Creating a virtual environment is recommended to isolate APISec dependencies from the global Python installation.
 
@@ -66,13 +66,13 @@ python -m venv venv
 venv\Scripts\activate
 ```
 
-### Step 4 — Install Python Dependencies
+### Step 4 - Install Python Dependencies
 
 ```
 pip install -r requirements.txt
 ```
 
-### Step 5 — Install APISec as a Global Command
+### Step 5 - Install APISec as a Global Command
 
 ```
 pip install -e .
@@ -86,7 +86,7 @@ Verify:
 apisec --help
 ```
 
-### Step 6 — Install sqlmap (Optional)
+### Step 6 - Install sqlmap (Optional)
 
 ```
 git clone https://github.com/sqlmapproject/sqlmap.git C:\tools\sqlmap
@@ -104,7 +104,7 @@ Verify:
 sqlmap --version
 ```
 
-### Step 7 — Install mitmproxy (Optional)
+### Step 7 - Install mitmproxy (Optional)
 
 ```
 pip install mitmproxy mitmproxy2swagger pyyaml
@@ -120,7 +120,7 @@ mitmdump --version
 
 ## 3. Installation on Linux (Kali / Ubuntu)
 
-### Step 1 — Update System Packages
+### Step 1 - Update System Packages
 
 ```
 sudo apt update && sudo apt upgrade -y
@@ -364,5 +364,3 @@ python web_app.py --port 8080
 ```
 
 ---
-
-*APISec v2.0 — ENSAT Tanger / DATAPROTECT Casablanca — 2026*

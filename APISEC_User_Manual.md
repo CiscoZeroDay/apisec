@@ -1,500 +1,594 @@
-# 📖 APISEC — User Manual
+# APISec — User Manual
 
-> **Version:** 2.0 | **Author:** RAZAFINDRAIBE Hery Jhonny | **ENSAT Tanger / DATAPROTECT Casablanca**
-
----
-
-## 📋 Table of Contents
-
-1. [Overview](#overview)
-2. [Quick Start — Web UI (Beginner)](#quick-start--web-ui-beginner)
-3. [Advanced Usage — CLI](#advanced-usage--cli)
-4. [CLI Command Reference](#cli-command-reference)
-5. [Understanding Scan Results](#understanding-scan-results)
-6. [AI Assistant](#ai-assistant)
-7. [Scan History and Reports](#scan-history-and-reports)
-8. [Best Practices](#best-practices)
+**Version:** 2.0  
+**Author:** RAZAFINDRAIBE Hery Jhonny  
+**Institution:** ENSAT Tanger / DATAPROTECT Casablanca  
+**Repository:** https://github.com/CiscoZeroDay/apisec
 
 ---
 
-## 1. 🎯 Overview
+## Table of Contents
 
-APISEC is an automated API security auditing tool that supports three protocols :
+1. Overview
+2. General Usage
+3. Global Options
+4. Commands
+   - 4.1 discovery
+   - 4.2 params
+   - 4.3 scan
+   - 4.4 full
+   - 4.5 capture
+   - 4.6 exploit
+   - 4.7 schema
+   - 4.8 report
+5. Authentication Options
+6. Available Tests
+7. Typical Workflows
+8. Web Interface
+9. Output Files Reference
 
-| Protocol | Auto-detected | Security checks |
+---
+
+## 1. Overview
+
+APISec is a command-line API security auditing tool supporting REST, GraphQL, and SOAP protocols. It provides automated discovery, vulnerability scanning, traffic capture, exploitation, and PDF report generation within a unified platform.
+
+The general invocation syntax is:
+
+```
+apisec <command> [options]
+```
+
+---
+
+## 2. General Usage
+
+```
+apisec --help
+apisec <command> --help
+```
+
+All commands share a common set of global options described in Section 3. Each command also accepts its own specific arguments described in Section 4.
+
+---
+
+## 3. Global Options
+
+The following options are available across all commands.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--timeout` | int | 5 | HTTP request timeout in seconds (1–60) |
+| `--token` | string | None | Bearer token for authenticated scans |
+| `--token-file` | path | None | Path to a file containing the Bearer token |
+| `--login-url` | string | None | Login endpoint for auto-authentication |
+| `--username` | string | None | Username or email for auto-login |
+| `--password` | string | None | Password for auto-login |
+| `--login-body` | string | None | Raw JSON body for custom login requests |
+| `--cookie` | string | None | Cookie string for injection tests (e.g. `session=abc; csrf=xyz`) |
+| `--api-key` | string | None | API key value for injection tests |
+| `--api-key-name` | string | X-API-Key | API key header name |
+| `--second-token` | string | None | Second account JWT for IDOR confirmation |
+| `--output` | path | None | Output file path for JSON results |
+| `--json` | flag | false | Print raw JSON output to stdout |
+| `--verbose` | flag | false | Enable verbose logging |
+| `--deep` | flag | false | Enable time-based techniques (slower but more thorough) |
+
+---
+
+## 4. Commands
+
+### 4.1 discovery
+
+Detects the API type, crawls available endpoints, and extracts the GraphQL schema when applicable. This command must be run first before any scan.
+
+**Syntax:**
+
+```
+apisec discovery --url URL --wordlist FILE [--mode quick|full] [options]
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--url` | Yes | — | Target API base URL (must start with http:// or https://) |
+| `--wordlist` | Yes | — | Path to the endpoint wordlist file |
+| `--mode` | No | quick | Crawl mode: `quick` (first 50 paths) or `full` (entire wordlist) |
+
+**Output:**
+
+The command saves discovery results to `endpoints.json` by default (overridable with `--output`). The file contains the detected API type, confidence score, list of endpoints, and the GraphQL schema if applicable.
+
+**Examples:**
+
+```
+apisec discovery --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt
+
+apisec discovery --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt --mode full
+
+apisec discovery --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt --output results/endpoints.json --verbose
+```
+
+---
+
+### 4.2 params
+
+Discovers undocumented HTTP parameters accepted by each REST endpoint. This command is specific to REST APIs. For GraphQL and SOAP, parameter discovery is not required as arguments are derived from the schema or WSDL respectively.
+
+**Syntax:**
+
+```
+apisec params --input FILE [--wordlist FILE] [options]
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--input` | Yes | — | Path to `endpoints.json` produced by `apisec discovery` |
+| `--wordlist` | No | None | Custom parameters wordlist (uses built-in wordlist if omitted) |
+
+**Output:**
+
+Results are saved to `params.json` by default (overridable with `--output`).
+
+**Examples:**
+
+```
+apisec params --input endpoints.json
+
+apisec params --input endpoints.json --wordlist wordlists/params.txt --token eyJhbGci...
+```
+
+---
+
+### 4.3 scan
+
+Tests discovered endpoints for security vulnerabilities. Accepts either a discovery output file or a single endpoint specified directly on the command line.
+
+**Syntax:**
+
+```
+apisec scan --input FILE [--tests all] [options]
+apisec scan --url URL --endpoint PATH [--tests all] [--api-type REST|GraphQL|SOAP] [options]
+apisec scan --input FILE --list-tests
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--input` | Conditional | None | Path to `endpoints.json` from discovery |
+| `--url` | Conditional | None | Base URL (required when using `--endpoint`) |
+| `--endpoint` | Conditional | None | Single path to test (e.g. `/users/1`) |
+| `--tests` | No | all | Tests to run: `all`, comma-separated names, or numbers (e.g. `1,3,4`) |
+| `--list-tests` | No | false | List available tests for the detected API type and exit |
+| `--api-type` | No | REST | Force API type when using `--endpoint` directly |
+
+**Specifying tests:**
+
+```
+--tests all                  Run all implemented tests
+--tests 0                    Equivalent to all
+--tests sqli,idor,auth       Run specific named tests
+--tests 1,3,4                Run tests by number (see --list-tests)
+```
+
+**Output:**
+
+Results are printed to the terminal and saved to a JSON file when `--output` is specified.
+
+**Examples:**
+
+```
+apisec scan --input endpoints.json --tests all
+
+apisec scan --input endpoints.json --tests sqli,idor --token eyJhbGci...
+
+apisec scan --url http://localhost:8000 --endpoint /api/users/1 --tests idor --api-type REST
+
+apisec scan --input endpoints.json --list-tests
+
+apisec scan --input endpoints.json --tests all --output scan_results.json --verbose
+```
+
+---
+
+### 4.4 full
+
+Chains the discovery and scan phases into a single command. Equivalent to running `apisec discovery` followed by `apisec scan`.
+
+**Syntax:**
+
+```
+apisec full --url URL --wordlist FILE [--tests all] [options]
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--url` | Yes | — | Target API base URL |
+| `--wordlist` | Yes | — | Path to the endpoint wordlist file |
+| `--mode` | No | quick | Crawl mode: `quick` or `full` |
+| `--tests` | No | all | Tests to run (same syntax as `apisec scan`) |
+| `--scan-output` | No | scan_results.json | Output file for scan results |
+
+**Examples:**
+
+```
+apisec full --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt --tests all
+
+apisec full --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt --mode full --tests sqli,auth --token eyJhbGci... --output endpoints.json --scan-output results.json
+```
+
+---
+
+### 4.5 capture
+
+Captures live HTTP/HTTPS traffic via a transparent mitmproxy-based proxy, or reads and analyzes an existing `.mitm` traffic file.
+
+**Syntax:**
+
+```
+apisec capture --url URL [--port 8080] [options]
+apisec capture --url URL --read FILE [--full-requests] [--filter TYPE] [options]
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--url` | Yes | — | Target API base URL |
+| `--port` | No | 8080 | Proxy port for live capture |
+| `--read` | No | None | Path to an existing `.mitm` file to analyze instead of live capture |
+| `--full-requests` | No | false | Display complete request and response details after the summary |
+| `--filter` | No | None | Filter requests by type: `graphql`, `mutations`, `queries`, `rest`, `soap` |
+| `--requests-output` | No | requests.json | Output file for request details |
+| `--traffic-file` | No | traffic.mitm | Output file for raw mitmproxy flows |
+| `--swagger-file` | No | swagger_captured.yaml | Intermediate OpenAPI specification file |
+
+**Examples:**
+
+```
+apisec capture --url https://api.example.com --port 8080
+
+apisec capture --url https://api.example.com --read traffic.mitm
+
+apisec capture --url https://api.example.com --read traffic.mitm --full-requests
+
+apisec capture --url https://api.example.com --read traffic.mitm --filter graphql
+
+apisec capture --url https://api.example.com --read traffic.mitm --filter mutations --full-requests
+```
+
+---
+
+### 4.6 exploit
+
+Runs post-detection exploitation modules against confirmed GraphQL vulnerabilities. This command is currently limited to GraphQL APIs.
+
+**Syntax:**
+
+```
+apisec exploit --input FILE [--scan-input FILE] [--exploits E1,E2] [options]
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--input` | Yes | — | Path to `endpoints.json` from discovery |
+| `--scan-input` | No | None | Path to `scan_results.json` from a previous scan (optional) |
+| `--exploits` | No | all | Exploits to run: `E1,E2,E3` or `all` |
+| `--output-dir` | No | . | Directory for generated proof-of-concept files |
+
+**Available exploit modules:**
+
+| ID | Triggered by | Description |
 |---|---|---|
-| 🟢 REST | ✅ Yes | 12 modules · 43 checks |
-| 🟣 GraphQL | ✅ Yes | 10 modules · 17 checks |
-| 🟠 SOAP | ✅ Yes | 7 modules · 12 checks |
+| E1 | GQL-S1 | Full schema cartography after confirmed introspection |
+| E2 | GQL-S3 | Extraction of actual values from detected sensitive fields |
+| E3 | GQL-S5 | Enumeration of object IDs across all schema queries |
+| E4 | GQL-S10 | Credential bruteforce via GraphQL alias batching |
 
-**Two interfaces available :**
-- 🖥️ **Web UI** — browser-based, for beginners and quick assessments
-- ⌨️ **CLI** — command-line, for advanced users and pipeline integration
+**Examples:**
 
-> ⚠️ **Legal disclaimer:** Only scan APIs you own or have explicit written authorization to test. Unauthorized scanning is illegal.
+```
+apisec exploit --input endpoints.json
+
+apisec exploit --input endpoints.json --scan-input scan_results.json
+
+apisec exploit --input endpoints.json --exploits E1,E3 --output-dir ./poc
+```
 
 ---
 
-## 2. 🖥️ Quick Start — Web UI (Beginner)
+### 4.7 schema
 
-### Step 1 — Start the Web UI
+Exports the GraphQL schema from a discovery result file into formats compatible with visual schema exploration tools.
 
-```bash
+**Syntax:**
+
+```
+apisec schema --input FILE [--format voyager|sdl|both] [--output-dir DIR] [options]
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--input` | Yes | — | Path to `endpoints.json` from a GraphQL discovery |
+| `--format` | No | both | Export format: `voyager` (introspection JSON), `sdl`, or `both` |
+| `--output-dir` | No | . | Directory for output files |
+
+**Compatible visualization tools:**
+
+| Format | Tool | URL |
+|---|---|---|
+| voyager | GraphQL Voyager | https://graphql-kit.com/graphql-voyager/ |
+| sdl | GraphQL Voyager (SDL tab) | https://graphql-kit.com/graphql-voyager/ |
+| sdl | Nathan Randal Visualizer | https://nathanrandal.com/graphql-visualizer/ |
+
+**Examples:**
+
+```
+apisec schema --input endpoints.json
+
+apisec schema --input endpoints.json --format sdl --output-dir ./schema
+```
+
+---
+
+### 4.8 report
+
+Generates a structured PDF security report from scan results. The report follows a professional penetration testing report format including an executive summary, OWASP API Top 10 coverage matrix, detailed findings with evidence, and a priority remediation plan.
+
+**Syntax:**
+
+```
+apisec report --input FILE [--discovery FILE] [--output FILE] [options]
+```
+
+**Arguments:**
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--input` | Yes | — | Path to `scan_results.json` from `apisec scan` |
+| `--discovery` | No | None | Path to `endpoints.json` for target URL and API type context |
+| `--output` | No | apisec_report.pdf | Output PDF file path |
+
+**Examples:**
+
+```
+apisec report --input scan_results.json
+
+apisec report --input scan_results.json --discovery endpoints.json
+
+apisec report --input scan_results.json --discovery endpoints.json --output reports/audit_report.pdf
+```
+
+---
+
+## 5. Authentication Options
+
+APISec supports multiple authentication mechanisms for scanning authenticated endpoints.
+
+### Bearer Token
+
+```
+apisec scan --input endpoints.json --token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+### Token from File
+
+```
+apisec scan --input endpoints.json --token-file /path/to/token.txt
+```
+
+### Auto-Login
+
+```
+apisec scan --input endpoints.json --login-url https://api.example.com/auth/login --username admin@example.com --password secret
+```
+
+### Cookie
+
+```
+apisec scan --input endpoints.json --cookie "session=abc123; csrf=xyz456"
+```
+
+### API Key
+
+```
+apisec scan --input endpoints.json --api-key sk-live-abc123 --api-key-name X-API-Key
+```
+
+### IDOR Confirmation (Second Account)
+
+```
+apisec scan --input endpoints.json --token eyJhbGci... --second-token eyJhbGci...
+```
+
+---
+
+## 6. Available Tests
+
+### REST Tests
+
+| Name | OWASP Category | Description |
+|---|---|---|
+| misconfig | API8:2023 | CORS, missing security headers, server version disclosure, HTTP TRACE |
+| auth | API2:2023 | Broken authentication and token validation |
+| sqli | API8:2023 | SQL injection detection via sqlmap integration |
+| blind_sqli | API8:2023 | Blind SQL injection (time-based) |
+| nosql | API8:2023 | NoSQL injection via boolean and operator techniques |
+| xss | API8:2023 | Cross-site scripting in API responses |
+| idor | API1:2023 | Insecure direct object reference via ID enumeration |
+| ssrf | API7:2023 | Server-side request forgery |
+| bflaw | API5:2023 | Broken function level authorization |
+| mass_assign | API3:2023 | Mass assignment via hidden field injection |
+| rate_limit | API4:2023 | Rate limiting absence and bypass |
+| inventory | API9:2023 | Exposed documentation, debug endpoints, deprecated versions |
+| sensitive | API3:2023 | Sensitive data exposure in API responses |
+
+### GraphQL Tests
+
+| Name | OWASP Category | Description |
+|---|---|---|
+| introspection | API8:2023 | Introspection exposure and bypass techniques |
+| bypass | API8:2023 | Introspection bypass via newline injection and GET method |
+| fields | API3:2023 | Sensitive field exposure in schema |
+| auth | API2:2023 | Broken authentication on queries and mutations |
+| idor | API1:2023 | IDOR via GraphQL ID arguments |
+| csrf | API8:2023 | CSRF via HTTP GET requests |
+| sqli | API8:2023 | SQL injection in GraphQL arguments |
+| nosqli | API8:2023 | NoSQL injection in GraphQL arguments |
+| batch | API4:2023 | Query batching abuse |
+| alias | API4:2023 | Alias-based rate limit bypass |
+| depth | API4:2023 | Excessive query depth |
+| subscription | API8:2023 | Subscription endpoint exposure |
+| error | API8:2023 | Verbose error messages leaking schema information |
+
+### SOAP Tests
+
+| Name | OWASP Category | Description |
+|---|---|---|
+| wsdl | API8:2023 | WSDL exposure and enumeration |
+| xxe | API8:2023 | XML External Entity injection |
+| sqli | API8:2023 | SQL injection in SOAP parameters |
+| injection | API8:2023 | XML and SOAP parameter injection |
+| auth | API2:2023 | WS-Security authentication bypass |
+| replay | API2:2023 | SOAP replay attack via identical request and expired timestamp |
+| action_spoofing | API8:2023 | SOAPAction header spoofing |
+
+---
+
+## 7. Typical Workflows
+
+### Black-box REST Audit
+
+```
+apisec discovery --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt --mode full
+apisec params    --input endpoints.json
+apisec scan      --input endpoints.json --tests all --output scan_results.json
+apisec report    --input scan_results.json --discovery endpoints.json --output report.pdf
+```
+
+### Gray-box REST Audit (Known Endpoints)
+
+```
+apisec scan --input endpoints.json --tests all --token eyJhbGci... --output scan_results.json
+apisec report --input scan_results.json --discovery endpoints.json
+```
+
+### Black-box GraphQL Audit
+
+```
+apisec discovery --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt
+apisec scan      --input endpoints.json --tests all --output scan_results.json
+apisec exploit   --input endpoints.json --scan-input scan_results.json
+apisec schema    --input endpoints.json --format both
+apisec report    --input scan_results.json --discovery endpoints.json
+```
+
+### SOAP Audit
+
+```
+apisec discovery --url http://localhost:7777 --wordlist wordlists/api-endpoints-res.txt
+apisec scan      --input endpoints.json --tests all --output scan_results.json
+apisec report    --input scan_results.json --discovery endpoints.json
+```
+
+### Full Automated Scan (Single Command)
+
+```
+apisec full --url https://api.example.com --wordlist wordlists/api-endpoints-res.txt --tests all --mode full --scan-output scan_results.json
+```
+
+### Traffic Capture Workflow
+
+```
+# Step 1 — Start the proxy and browse the target application
+apisec capture --url https://api.example.com --port 8080
+
+# Step 2 — Configure your browser proxy settings to 127.0.0.1:8080
+# Step 3 — Navigate the application normally, then stop the capture (Ctrl+C)
+
+# Step 4 — Analyze the captured traffic
+apisec capture --url https://api.example.com --read traffic.mitm --full-requests --filter graphql
+
+# Step 5 — Scan the captured endpoints
+apisec scan --input endpoints.json --tests all
+```
+
+---
+
+## 8. Web Interface
+
+APISec provides a web-based interface as an alternative to the CLI, designed for users who prefer a graphical environment for configuring and monitoring scans.
+
+### Starting the Web Interface
+
+```
 python web_app.py
 ```
 
-Open your browser at : **http://localhost:5000**
+Open a browser and navigate to: **http://localhost:5000**
 
----
+To use a different port:
 
-### Step 2 — Configure your scan
+```
+python web_app.py --port 8080
+```
 
-Fill in the scan form :
+### Available Features
 
-| Field | Description | Example |
+| Feature | Description |
+|---|---|
+| Scan configuration | Set target URL, API type, specific endpoint, discovery mode, and timeout |
+| Authentication | Configure Bearer token, second token, cookie, API key, and auto-login credentials |
+| Test selection | Select all tests or individual tests per protocol |
+| Real-time monitoring | Live scan logs streamed to the browser via Server-Sent Events (SSE) |
+| Findings dashboard | Color-coded findings grouped by severity (CRITICAL, HIGH, MEDIUM, LOW, INFO) |
+| PDF report download | Generate and download the security report directly from the browser |
+| JSON export | Download raw scan results in JSON format |
+| AI assistant | Analyze findings and get remediation suggestions powered by Groq or Ollama |
+
+### CLI vs Web Interface Comparison
+
+| Capability | CLI | Web Interface |
 |---|---|---|
-| **Target URL** | Base URL of the API to scan | `http://localhost:8888` |
-| **API Type** | Leave as AUTO for automatic detection | `AUTO` |
-| **Tests** | Select ALL or individual modules | `ALL` |
-| **Auth Token** | JWT or API key (optional) | `eyJhbGci...` |
+| API discovery | `apisec discovery` | Integrated in scan configuration |
+| Vulnerability scan | `apisec scan` | Graphical scan form |
+| Real-time logs | Terminal output | SSE streaming in browser |
+| PDF report | `apisec report` | Download button |
+| JSON export | `--output FILE` | Download button |
+| AI assistant | Not available | Available |
+| Parameter discovery | `apisec params` | Automatic before scan |
+| Traffic capture | `apisec capture` | Not available |
+| GraphQL exploit | `apisec exploit` | Not available |
+| Schema export | `apisec schema` | Not available |
+
+### Notes
+
+- The web interface uses the same underlying scanning engine as the CLI. Results are identical regardless of the mode used.
+- The AI assistant requires a configured Groq API key or a running Ollama instance. Refer to Section 5 of the Installation Guide for configuration instructions.
+- The web interface does not persist scan history between sessions. Results are available for download immediately after the scan completes.
 
 ---
 
-### Step 3 — Launch the scan
+## 9. Output Files Reference
 
-Click **▶ LAUNCH SCAN**
-
-The console will show real-time scan progress :
-
-```
-▶  Target  : http://localhost:8888
-▶  Mode    : AUTO DISCOVERY
-▶  Tests   : all
-──────────────────────────────────────────────────────────────
-[→] Starting API discovery...
-[✓] REST API detected (confidence: 87%)
-[→] Discovered 12 endpoints
-[→] Running misconfig tests...
-[VULN] CORS-001 — Reflected Origin CORS Misconfiguration
-[→] Running auth tests...
-[VULN] AUTH-003 — JWT none Algorithm Accepted
-✅  Scan done — 5 finding(s) in 42.3s
-```
-
----
-
-### Step 4 — Review findings
-
-After the scan, findings appear as cards below the console :
-
-Each card shows :
-- 🔴 **Severity** — CRITICAL / HIGH / MEDIUM / LOW / INFO
-- **Vulnerability name** and OWASP mapping
-- **Affected endpoint** and HTTP method
-- **Payload used** to detect the vulnerability
-- **Evidence** — what changed in the response
-- **Remediation guidance**
-
----
-
-### Step 5 — Download the report
-
-Click **📄 Download PDF** or **📋 Download JSON** to export the full report.
-
----
-
-## 3. ⌨️ Advanced Usage — CLI
-
-The CLI provides full control over the scan pipeline and is suitable for integration into automated security workflows.
-
-### Full pipeline (recommended)
-
-```bash
-# Step 1: Discover endpoints
-python main.py discovery --url https://api.example.com \
-    --wordlist wordlists/swagger.txt
-
-# Step 2: Discover parameters (REST only)
-python main.py params --input endpoints.json
-
-# Step 3: Run security scan
-python main.py scan --input endpoints.json --tests all
-
-# OR: Run everything in one command
-python main.py full --url https://api.example.com \
-    --wordlist wordlists/swagger.txt --tests all
-```
-
----
-
-### Authenticated scan
-
-```bash
-# Bearer token
-python main.py full --url https://api.example.com \
-    --token eyJhbGciOiJSUzI1NiJ9... \
-    --tests all
-
-# Login credentials (auto-login)
-python main.py full --url https://api.example.com \
-    --login-url https://api.example.com/auth/login \
-    --username admin@example.com \
-    --password secret123 \
-    --tests all
-
-# Two tokens for IDOR confirmation
-python main.py scan --input endpoints.json \
-    --token eyJ_user1... \
-    --second-token eyJ_user2... \
-    --tests idor
-```
-
----
-
-### Targeted single endpoint scan
-
-```bash
-# Test only one endpoint with specific tests
-python main.py scan \
-    --url https://api.example.com \
-    --endpoint /api/users/1 \
-    --tests sqli,nosql,idor \
-    --token eyJhbGci...
-```
-
----
-
-### GraphQL scan
-
-```bash
-# Auto-detected
-python main.py full --url https://api.example.com/graphql \
-    --tests all
-
-# Schema extraction only
-python main.py schema --input endpoints.json --format both
-
-# With introspection bypass
-python main.py scan --input endpoints.json \
-    --api-type graphql --tests bypass,auth,depth
-```
-
----
-
-### SOAP scan
-
-```bash
-python main.py full --url https://service.example.com/api \
-    --wordlist wordlists/swagger.txt \
-    --tests wsdl,xxe,sqli,auth
-```
-
----
-
-### Traffic capture (when wordlist fails)
-
-```bash
-# Start capture proxy
-python main.py capture --url https://api.example.com --port 8080
-
-# Configure browser proxy: localhost:8080
-# Browse the application normally
-# Press ENTER when done
-
-# Read existing capture file
-python main.py capture --url https://api.example.com \
-    --read traffic.mitm
-
-# Full request details
-python main.py capture --url https://api.example.com \
-    --read traffic.mitm --full-requests
-```
-
----
-
-### List available tests
-
-```bash
-# List all REST tests
-python main.py scan --url http://x --tests all --list-tests
-
-# Run test by number
-python main.py scan --input endpoints.json --tests 0
-python main.py scan --input endpoints.json --tests 1,3,5
-```
-
----
-
-## 4. 📚 CLI Command Reference
-
-### Global options (available on all commands)
-
-| Option | Description | Default |
+| File | Produced by | Description |
 |---|---|---|
-| `--timeout` | HTTP request timeout in seconds | `5` |
-| `--token` | Bearer token for authentication | None |
-| `--token-file` | Path to file containing the token | None |
-| `--login-url` | Auto-login endpoint URL | None |
-| `--username` | Login username | None |
-| `--password` | Login password | None |
-| `--login-body` | Raw JSON login body | None |
-| `--cookie` | Session cookie string | None |
-| `--api-key` | API key value | None |
-| `--api-key-name` | API key header name | `X-API-Key` |
-| `--second-token` | Second account token for IDOR | None |
-| `--output` | Output file path | Auto-generated |
-| `--json` | Output results as JSON | False |
-| `--verbose` | Verbose logging | False |
-| `--deep` | Deep scan mode (slower, more thorough) | False |
+| `endpoints.json` | `discovery`, `full`, `capture` | Detected API type, endpoints, GraphQL schema |
+| `params.json` | `params` | Discovered parameters per endpoint |
+| `scan_results.json` | `scan`, `full` | List of detected vulnerabilities with evidence |
+| `requests.json` | `capture` | Full details of captured HTTP requests |
+| `traffic.mitm` | `capture` | Raw mitmproxy flow file |
+| `swagger_captured.yaml` | `capture` | Intermediate OpenAPI specification |
+| `apisec_report.pdf` | `report` | Professional PDF security report |
 
 ---
-
-### `discovery` — API detection and endpoint crawl
-
-```bash
-python main.py discovery --url URL --wordlist FILE [--mode quick|full]
-```
-
-| Option | Description |
-|---|---|
-| `--url` | Target URL (required) |
-| `--wordlist` | Endpoint wordlist path (required) |
-| `--mode` | `quick` (fast) or `full` (recursive depth crawl) |
-
-**Output:** `endpoints.json` — API type, confidence, and discovered endpoints
-
----
-
-### `params` — Parameter discovery (REST only)
-
-```bash
-python main.py params --input endpoints.json [--wordlist FILE]
-```
-
-| Option | Description |
-|---|---|
-| `--input` | endpoints.json from discovery (required) |
-| `--wordlist` | Custom parameter wordlist |
-
-**Output:** Updated `endpoints.json` with discovered parameters
-
----
-
-### `scan` — Vulnerability scan
-
-```bash
-python main.py scan --input endpoints.json [--tests all]
-python main.py scan --url URL --endpoint /path [--tests sqli,idor]
-```
-
-| Option | Description |
-|---|---|
-| `--input` | endpoints.json (or use --url + --endpoint) |
-| `--url` | Base URL (with --endpoint) |
-| `--endpoint` | Single path to test |
-| `--tests` | `all`, test names (e.g. `sqli,nosql`), or test numbers |
-| `--api-type` | Force protocol: `REST`, `GraphQL`, `SOAP` |
-| `--list-tests` | Print available tests and exit |
-
----
-
-### `full` — Full pipeline (discovery + params + scan)
-
-```bash
-python main.py full --url URL --wordlist FILE [--tests all]
-```
-
-Runs discovery → params → scan in sequence.
-
----
-
-### `schema` — GraphQL schema extraction
-
-```bash
-python main.py schema --input endpoints.json [--format json|sdl|both]
-```
-
-| Option | Description |
-|---|---|
-| `--input` | endpoints.json with GraphQL endpoint |
-| `--format` | Output format: `json`, `sdl`, or `both` |
-| `--output-dir` | Directory for schema files |
-
----
-
-### `capture` — Traffic capture via mitmproxy
-
-```bash
-python main.py capture --url URL [--port 8080]
-python main.py capture --url URL --read traffic.mitm [--full-requests]
-```
-
-| Option | Description |
-|---|---|
-| `--url` | Target API URL |
-| `--port` | Proxy port (default: 8080) |
-| `--read` | Read existing .mitm file instead of capturing |
-| `--full-requests` | Show full request/response details |
-| `--filter` | Filter by type: `graphql`, `soap`, `rest` |
-
----
-
-## 5. 📊 Understanding Scan Results
-
-### Severity levels
-
-| Severity | Color | Meaning |
-|---|---|---|
-| 🔴 CRITICAL | Red | Immediate exploitation risk — fix now |
-| 🟠 HIGH | Orange | Significant risk — fix as soon as possible |
-| 🟡 MEDIUM | Yellow | Moderate risk — plan remediation |
-| 🟢 LOW | Green | Low risk — monitor and review |
-| ⚪ INFO | Gray | Informational — no immediate action needed |
-
-### Confidence levels
-
-| Confidence | Meaning |
-|---|---|
-| HIGH | Direct evidence — the response proves the vulnerability |
-| MEDIUM | Indirect evidence — behavioral deviation detected, manual confirmation recommended |
-| LOW | Pattern match — manual verification required |
-
-### Finding fields
-
-Each finding contains :
-
-| Field | Description |
-|---|---|
-| `vuln_id` | Unique identifier (e.g. CORS-001, GQL-S4) |
-| `vuln_type` | Vulnerability category |
-| `severity` | CRITICAL / HIGH / MEDIUM / LOW / INFO |
-| `confidence` | HIGH / MEDIUM / LOW |
-| `owasp` | OWASP API Security Top 10 mapping |
-| `cwe` | CWE identifier |
-| `endpoint` | Affected URL |
-| `method` | HTTP method used |
-| `parameter` | Affected parameter |
-| `payload` | Exact payload that triggered the finding |
-| `evidence` | What changed in the response — proof of vulnerability |
-| `description` | Technical explanation |
-| `solution` | Remediation guidance |
-| `reference` | External reference URL |
-
----
-
-## 6. 🤖 AI Assistant
-
-The AI assistant helps interpret findings and suggest remediation strategies.
-
-### Setup via Web UI
-
-1. Click the **AI** icon in the top bar
-2. Select provider : **Groq** (free) or **Ollama** (local)
-3. Enter your API key (Groq) or confirm Ollama is running
-4. Click **Save**
-
-### Setup via environment variables
-
-```bash
-# Groq (free)
-export APISEC_AI_PROVIDER=groq
-export GROQ_API_KEY=gsk_your_key
-
-# Ollama (local)
-export APISEC_AI_PROVIDER=ollama
-export OLLAMA_MODEL=llama3.2
-ollama serve  # must be running
-```
-
-### Using the AI assistant
-
-After a scan completes :
-1. Click **🤖 Analyze with AI** on any finding card
-2. The AI will explain the vulnerability, the attack scenario, and suggest fixes
-3. Use the **chat** tab for free-form security questions
-
-> ⚠️ **Privacy note:** When using Groq, scan findings are sent to Groq's API. Use Ollama for sensitive targets requiring data confidentiality.
-
----
-
-## 7. 📁 Scan History and Reports
-
-### Web UI — History page
-
-Navigate to **http://localhost:5000/history** to see :
-- All past scans with date, target, API type, and finding counts
-- KPI dashboard — total scans, findings by severity
-- Export options per scan
-
-### Report formats
-
-| Format | How to get it | Contents |
-|---|---|---|
-| PDF | Click **Download PDF** in Web UI or history | Full report with findings, evidence, remediation |
-| JSON | Click **Download JSON** or use `/api/report/<id>/json` | Machine-readable findings for further processing |
-
-### CLI — Access scan history
-
-```bash
-# List all scans (via Flask API)
-curl http://localhost:5000/api/scans
-
-# Get specific scan
-curl http://localhost:5000/api/scans/<scan_id>
-
-# Download JSON report
-curl http://localhost:5000/api/report/<scan_id>/json > report.json
-
-# Download PDF report
-curl http://localhost:5000/api/report/<scan_id>/pdf > report.pdf
-```
-
----
-
-## 8. 💡 Best Practices
-
-### For beginners
-
-- ✅ Start with the **Web UI** for the first scan
-- ✅ Always scan in a **controlled test environment** first
-- ✅ Use **AUTO** API type detection — let APISEC identify the protocol
-- ✅ Review each finding manually before reporting it
-
-### For advanced users
-
-- ✅ Use `--second-token` for IDOR tests to get HIGH confidence results
-- ✅ Use `--deep` mode for thorough SQL injection testing
-- ✅ Combine `discovery` → `params` → `scan` separately for better control
-- ✅ Use `capture` mode when the API requires authentication to reveal endpoints
-- ✅ Save `endpoints.json` and reuse it for multiple targeted scans
-
-### For CI/CD integration
-
-```bash
-# Non-interactive scan with JSON output
-python main.py full \
-    --url https://staging-api.example.com \
-    --wordlist wordlists/swagger.txt \
-    --tests all \
-    --token $API_TOKEN \
-    --json \
-    --output results.json
-
-# Exit code: 0 = no findings, 1 = findings detected
-echo "Exit code: $?"
-```
-
-### Scan scope recommendations
-
-| Scenario | Recommended command |
-|---|---|
-| Quick security check | `full --tests misconfig,auth` |
-| Full REST audit | `full --tests all --deep` |
-| GraphQL audit | `full --api-type graphql --tests all` |
-| SOAP audit | `full --api-type soap --tests wsdl,xxe,sqli,auth` |
-| Single endpoint deep test | `scan --endpoint /api/users/1 --tests sqli,nosql,idor` |
-| Unknown API exploration | `discovery --mode full` then review endpoints.json |
-
----
-
-*User Manual — APISEC v2.0 | ENSAT Tanger / DATAPROTECT Casablanca 2026*
