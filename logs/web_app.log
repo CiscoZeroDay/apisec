@@ -105,3 +105,79 @@ AttributeError: 'sqlite3.Row' object has no attribute 'get'
 2026-06-01 12:31:12 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
 2026-06-02 10:03:40 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
 2026-06-02 17:48:48 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-06-07 17:39:08 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-06-08 19:34:04 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-06-08 21:34:45 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-06-08 21:35:12 [INFO] Scan fd3a8d24-62a5-41fd-834d-bc02dfc17d8d started: http://localhost:7777/  tests=all
+2026-06-08 21:43:28 [INFO] Scan fd3a8d24-62a5-41fd-834d-bc02dfc17d8d done: 0 findings in 496.3s
+2026-06-08 21:44:14 [INFO] Scan 5f150504-0f6c-4cdc-b5ee-46e435948e1d started: http://localhost:7777/  tests=all
+2026-06-08 21:46:17 [INFO] Scan 5f150504-0f6c-4cdc-b5ee-46e435948e1d done: 7 findings in 122.8s
+2026-06-08 21:57:29 [INFO] Scan bb47475d-a3d1-4a8d-84f4-7341fcb446d0 started: http://localhost:7777/  tests=all
+2026-06-08 21:58:10 [INFO] Scan bb47475d-a3d1-4a8d-84f4-7341fcb446d0 done: 0 findings in 41.0s
+2026-06-08 21:58:23 [INFO] Scan 87971945-33d1-4365-9dc7-303267aaaa54 started: http://localhost:7777/  tests=all
+2026-06-08 22:25:00 [INFO] Scan 87971945-33d1-4365-9dc7-303267aaaa54 done: 42 findings in 1596.1s
+2026-06-08 22:26:10 [ERROR] Exception on /api/report/5f150504-0f6c-4cdc-b5ee-46e435948e1d/pdf [GET]
+Traceback (most recent call last):
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\web_app.py", line 1339, in report_pdf
+    Paragraph(v, sty_mono if k in ("Payload","Evidence","Reference") else sty_body)]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paragraph.py", line 1861, in __init__
+    self._setup(text, style, bulletText or getattr(style,'bulletText',None), frags, cleanBlockQuotedText)
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paragraph.py", line 1882, in _setup
+    style, frags, bulletTextFrags = _parser.parse(text,style)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paraparser.py", line 3221, in parse
+    return self._complete_parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paraparser.py", line 3155, in _complete_parse
+    self._syntax_error('parse ended with %d unclosed tags\n %s' % (len(self._stack),'\n '.join((x.__tag__ for x in reversed(self._stack)))))
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paraparser.py", line 2780, in _syntax_error
+    raise ValueError('paraparser: syntax error: %s' % message)
+ValueError: paraparser: syntax error: parse ended with 1 unclosed tags
+ para
+2026-06-08 22:26:10 [ERROR] 500 error
+Traceback (most recent call last):
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\web_app.py", line 1339, in report_pdf
+    Paragraph(v, sty_mono if k in ("Payload","Evidence","Reference") else sty_body)]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paragraph.py", line 1861, in __init__
+    self._setup(text, style, bulletText or getattr(style,'bulletText',None), frags, cleanBlockQuotedText)
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paragraph.py", line 1882, in _setup
+    style, frags, bulletTextFrags = _parser.parse(text,style)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paraparser.py", line 3221, in parse
+    return self._complete_parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paraparser.py", line 3155, in _complete_parse
+    self._syntax_error('parse ended with %d unclosed tags\n %s' % (len(self._stack),'\n '.join((x.__tag__ for x in reversed(self._stack)))))
+  File "E:\PROJECT\PFE DP\v2\api_audit_tool\venv\Lib\site-packages\reportlab\platypus\paraparser.py", line 2780, in _syntax_error
+    raise ValueError('paraparser: syntax error: %s' % message)
+ValueError: paraparser: syntax error: parse ended with 1 unclosed tags
+ para
+2026-06-12 15:32:33 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-06-15 13:32:48 [INFO] Database initialised at E:\PROJECT\PFE DP\v2\api_audit_tool\scans.db
+2026-06-15 13:33:15 [ERROR] AI chat error: [WinError 10061] Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée
