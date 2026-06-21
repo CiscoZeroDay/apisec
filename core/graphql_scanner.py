@@ -458,7 +458,7 @@ class GraphQLScanner:
                     active[name] = getattr(self, self._TEST_REGISTRY[name])
 
         if not active:
-            logger.info("[GraphQL] No applicable tests — skipped.")
+            logger.info("[GraphQL] No applicable tests - skipped.")
             return []
 
         gql_endpoints = self._resolve_endpoints(endpoints)

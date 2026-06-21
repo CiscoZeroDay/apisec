@@ -92,7 +92,9 @@ def _verbatim(text: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_scan_results(path: str) -> list[dict]:
-    with open(path, "r", encoding="utf-8") as f:
+    # errors="replace" — never crash on a stray non-UTF-8 byte in scan data
+    # (e.g. a payload/evidence string captured from a scanned target).
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         data = json.load(f)
     if isinstance(data, list):
         return data
@@ -103,7 +105,8 @@ def _load_discovery(path: Optional[str]) -> dict:
     if not path or not os.path.isfile(path):
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # errors="replace" — same safety net as _load_scan_results.
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -721,6 +724,16 @@ def _compile_pdf(tex_source: str, output_path: str) -> bool:
                 cmd,
                 capture_output = True,
                 text           = True,
+                # FIX — force UTF-8 decoding of pdflatex's stdout/stderr instead
+                # of relying on the system's default locale encoding. Without
+                # this, any non-ASCII character surfacing in pdflatex's console
+                # output (e.g. from a finding's evidence/payload echoed back in
+                # an error message) raised:
+                #   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe2 ...
+                # `errors="replace"` guarantees this call never crashes the
+                # report generation pipeline, even on a malformed byte.
+                encoding       = "utf-8",
+                errors         = "replace",
                 timeout        = 120,
                 cwd            = tmpdir,
             )
