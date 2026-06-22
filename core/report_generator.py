@@ -4,7 +4,7 @@ APISec Report Generator — LaTeX-style PDF via pdflatex.
 
 Usage (CLI):
     apisec report --input scan_results.json --output report.pdf
-    apisec report --input scan_results.json --discovery endpoints.json --output report.pdf --author "John Doe"
+    apisec report --input scan_results.json --discovery endpoints.json --output report.pdf
 
 Architecture:
     1. Load scan_results.json  (list of ScanResult dicts)
@@ -44,25 +44,17 @@ _SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 #  LaTeX escaping
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Characters that are valid Python/Unicode but break LaTeX's UTF-8 parser
-# (inputenc) when they show up raw in the .tex source: smart quotes, dashes,
-# control characters, and any other Windows-1252/Latin-1 leftovers that can
-# end up in scan evidence/payloads scraped from a live target. We normalize
-# the common "smart" punctuation to plain ASCII equivalents, then strip
-# anything else outside the safe printable range.
 _SMART_CHAR_MAP = {
-    "\u2018": "'",   # left single quote
-    "\u2019": "'",   # right single quote
-    "\u201c": '"',   # left double quote
-    "\u201d": '"',   # right double quote
-    "\u2013": "-",   # en dash
-    "\u2014": "--",  # em dash
-    "\u2026": "...", # ellipsis
-    "\u00a0": " ",   # non-breaking space
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "--",
+    "\u2026": "...",
+    "\u00a0": " ",
 }
 
-# Matches C0/C1 control characters (incl. stray bytes like 0x94, 0x91...)
-# that are not valid standalone UTF-8 and crash pdflatex's inputenc parser.
 _CONTROL_CHAR_RE = re.compile(
     r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]"
 )
@@ -73,19 +65,27 @@ def _sanitize(text: str) -> str:
     Normalize/strip characters that are valid in Python strings but invalid
     or unsafe for raw insertion into a LaTeX source file.
 
-    Must run BEFORE any LaTeX escaping (_esc / _esc_url / _verbatim) so that
-    every text field — including ones already partially encoded/decoded with
-    errors="replace" upstream — is guaranteed clean before reaching pdflatex.
+    Must run BEFORE any LaTeX escaping so that every text field is
+    guaranteed clean before reaching pdflatex.
+
+    Steps:
+      1. Replace known smart punctuation with ASCII equivalents
+      2. Drop Unicode replacement character and C0/C1 control chars
+      3. Strip ALL remaining non-ASCII characters (e.g. U+2666 diamond,
+         box-drawing chars, emoji) — keeps only printable ASCII 0x20-0x7E
+         This prevents pdflatex "Invalid UTF-8 byte" errors from
+         special characters in scan evidence/payloads.
     """
     if not text:
         return ""
     text = str(text)
     for bad, good in _SMART_CHAR_MAP.items():
         text = text.replace(bad, good)
-    # Drop the Unicode replacement character (from errors="replace" upstream)
-    # and any remaining control bytes that are not valid standalone UTF-8.
     text = text.replace("\ufffd", "")
     text = _CONTROL_CHAR_RE.sub("", text)
+    # Strip ALL non-ASCII — keeps only printable ASCII (0x20-0x7E)
+    # Replaces any remaining Unicode symbol with a space
+    text = "".join(c if 0x20 <= ord(c) <= 0x7E else " " for c in text)
     return text
 
 
@@ -114,13 +114,11 @@ def _esc(text: str) -> str:
 
 
 def _esc_url(url: str) -> str:
-    """Sanitize then escape URL for LaTeX — allow line breaks at / and - characters."""
+    """Sanitize then escape URL for LaTeX — allow line breaks."""
     if not url:
         return ""
     url = _sanitize(url)
-    # Insert zero-width break hints after / and - so LaTeX can wrap the URL
     escaped = url.replace("%", r"\%").replace("#", r"\#").replace("_", r"\_")
-    # Insert \allowbreak after each / and . for natural line-breaking
     escaped = escaped.replace("/", r"/\allowbreak{}").replace(".", r".\allowbreak{}")
     return escaped
 
@@ -129,7 +127,6 @@ def _verbatim(text: str) -> str:
     """Sanitize and wrap text in a LaTeX verbatim-safe box."""
     if not text:
         return r"\textit{N/A}"
-    # Use \texttt with manual escaping for inline display
     cleaned = _sanitize(text).replace("\n", " ").replace("\r", "")[:300]
     return r"\texttt{" + _esc(cleaned) + r"}"
 
@@ -139,8 +136,6 @@ def _verbatim(text: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_scan_results(path: str) -> list[dict]:
-    # errors="replace" — never crash on a stray non-UTF-8 byte in scan data
-    # (e.g. a payload/evidence string captured from a scanned target).
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         data = json.load(f)
     if isinstance(data, list):
@@ -152,7 +147,6 @@ def _load_discovery(path: Optional[str]) -> dict:
     if not path or not os.path.isfile(path):
         return {}
     try:
-        # errors="replace" — same safety net as _load_scan_results.
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return json.load(f)
     except Exception:
@@ -171,7 +165,6 @@ def _compute_stats(findings: list[dict]) -> dict:
             counts[sev] += 1
     total = sum(counts.values())
 
-    # Risk score: CRITICAL×10 + HIGH×5 + MEDIUM×2 + LOW×1
     risk = (
         counts["CRITICAL"] * 10
         + counts["HIGH"]     * 5
@@ -193,6 +186,106 @@ def _compute_stats(findings: list[dict]) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Dynamic OWASP coverage table
+# ─────────────────────────────────────────────────────────────────────────────
+
+_OWASP_TOP10 = [
+    ("API1",  "Broken Object Level Authorization",
+     {"REST": "IDOR, path traversal",           "GraphQL": "IDOR via queries",         "SOAP": "BOLA/IDOR on operations"},
+     ["API1:2023"]),
+    ("API2",  "Broken Authentication",
+     {"REST": "JWT none/alg confusion, rate limit", "GraphQL": "Mutation auth bypass",  "SOAP": "WS-Security bypass, replay"},
+     ["API2:2023"]),
+    ("API3",  "Broken Object Property Level Authorization",
+     {"REST": "Mass assignment, sensitive data", "GraphQL": "Sensitive field exposure", "SOAP": "SQLi, XPath injection"},
+     ["API3:2023"]),
+    ("API4",  "Unrestricted Resource Consumption",
+     {"REST": "Rate limiting absent",            "GraphQL": "Depth/alias/batch attacks","SOAP": "XML DoS, billion laughs"},
+     ["API4:2023"]),
+    ("API5",  "Broken Function Level Authorization",
+     {"REST": "BFLA, HTTP method tampering",     "GraphQL": "Mutation auth bypass",     "SOAP": "SOAPAction spoofing"},
+     ["API5:2023"]),
+    ("API6",  "Unrestricted Access to Sensitive Business Flows",
+     {"REST": "Sensitive data in responses",     "GraphQL": "Field exposure",           "SOAP": "Fault disclosure"},
+     ["API6:2023"]),
+    ("API7",  "Server Side Request Forgery",
+     {"REST": "SSRF via URL parameters",         "GraphQL": "N/A",                      "SOAP": "XXE-based SSRF"},
+     ["API7:2023"]),
+    ("API8",  "Security Misconfiguration",
+     {"REST": "CORS, headers, error disclosure", "GraphQL": "Introspection, CSRF",      "SOAP": "WSDL exposure, XXE, cmd injection"},
+     ["API8:2023"]),
+    ("API9",  "Improper Inventory Management",
+     {"REST": "Exposed docs, debug, old versions","GraphQL": "Schema exposure",          "SOAP": "WSDL disclosure"},
+     ["API9:2023"]),
+    ("API10", "Unsafe Consumption of APIs",
+     {"REST": "SQLi, NoSQLi, XSS",              "GraphQL": "SQLi, NoSQLi",             "SOAP": "SQL/XML injection"},
+     ["API10:2023"]),
+]
+
+
+def _render_owasp_table(findings: list[dict]) -> str:
+    """Build a dynamic OWASP API Top 10 coverage table."""
+    found_owasp: set[str] = set()
+    for f in findings:
+        owasp_val = f.get("owasp", "")
+        if ":" in owasp_val:
+            tag = owasp_val.split(" ")[0]
+            found_owasp.add(tag)
+
+    vuln_ids = [f.get("vuln_id", "") for f in findings]
+    if any(v.startswith("GQL") for v in vuln_ids):
+        api_type = "GraphQL"
+    elif any(v.startswith("SOAP") for v in vuln_ids):
+        api_type = "SOAP"
+    else:
+        api_type = "REST"
+
+    tex = r"""\begin{center}
+\begin{longtable}{p{1.1cm}p{5.5cm}p{4.5cm}p{2.5cm}}
+\toprule
+\rowcolor{TableHeader}
+\textcolor{white}{\textbf{ID}} &
+\textcolor{white}{\textbf{Category}} &
+\textcolor{white}{\textbf{Test Coverage}} &
+\textcolor{white}{\textbf{Status}} \\
+\midrule
+\endfirsthead
+\toprule
+\rowcolor{TableHeader}
+\textcolor{white}{\textbf{ID}} &
+\textcolor{white}{\textbf{Category}} &
+\textcolor{white}{\textbf{Test Coverage}} &
+\textcolor{white}{\textbf{Status}} \\
+\midrule
+\endhead
+"""
+
+    for api_id, category, coverage_map, owasp_tags in _OWASP_TOP10:
+        coverage   = coverage_map.get(api_type, "N/A")
+        is_vuln    = any(
+            any(tag in oval for tag in owasp_tags)
+            for oval in found_owasp
+        )
+        if is_vuln:
+            status = r"\textcolor{CriticalRed}{\textbf{[!] Vulnerable}}"
+        else:
+            status = r"\textcolor{LowGreen}{-- Not Detected}"
+
+        tex += (
+            r"\textbf{" + api_id + r"} & "
+            + _esc(category) + " & "
+            + _esc(coverage) + " & "
+            + status + r" \\" + "\n"
+        )
+
+    tex += r"""\bottomrule
+\end{longtable}
+\end{center}
+"""
+    return tex
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  LaTeX template rendering
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -210,11 +303,9 @@ def _render_tex(
     n_queries  = len(schema.get("queries",   []))
     n_muts     = len(schema.get("mutations", []))
 
-    # ── Preamble ──────────────────────────────────────────────────────────────
     tex = r"""
 \documentclass[12pt,a4paper]{report}
 
-% ── Packages ──────────────────────────────────────────────────────────────────
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
@@ -235,12 +326,10 @@ def _render_tex(
 \usepackage{tabularx}
 \usepackage{multirow}
 \usepackage{amsmath}
-\usepackage{seqsplit}
 \usepackage{xurl}
 \usepackage{tcolorbox}
 \tcbuselibrary{skins,breakable}
 
-% ── Colors ────────────────────────────────────────────────────────────────────
 \definecolor{APIsecBlue}{HTML}{1A3A5C}
 \definecolor{APIsecAccent}{HTML}{2E86AB}
 \definecolor{CriticalRed}{HTML}{BF0000}
@@ -252,7 +341,6 @@ def _render_tex(
 \definecolor{TableHeader}{HTML}{1A3A5C}
 \definecolor{TableRowAlt}{HTML}{EEF2F7}
 
-% ── Hyperref setup ────────────────────────────────────────────────────────────
 \hypersetup{
     colorlinks   = true,
     linkcolor    = APIsecBlue,
@@ -263,16 +351,14 @@ def _render_tex(
     pdfauthor    = {APISec},
 }
 
-% ── Header / Footer ───────────────────────────────────────────────────────────
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\small\textcolor{APIsecBlue}{\textbf{APISec} — API Security Audit Report}}
+\fancyhead[L]{\small\textcolor{APIsecBlue}{\textbf{APISec} --- API Security Audit Report}}
 \fancyhead[R]{\small\textcolor{gray}{""" + _esc(scan_date) + r"""}}
 \fancyfoot[C]{\small\textcolor{gray}{\thepage}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0pt}
 
-% ── Section style ─────────────────────────────────────────────────────────────
 \titleformat{\chapter}[block]
   {\normalfont\Large\bfseries\color{APIsecBlue}}
   {\thechapter.}{1em}{}
@@ -286,7 +372,6 @@ def _render_tex(
   {\normalfont\normalsize\bfseries\color{APIsecAccent}}
   {\thesubsection}{1em}{}
 
-% ── Listings (code/payload) ───────────────────────────────────────────────────
 \lstset{
     basicstyle   = \ttfamily\small,
     breaklines   = true,
@@ -297,7 +382,6 @@ def _render_tex(
     xrightmargin = 5pt,
 }
 
-% ── tcolorbox styles ──────────────────────────────────────────────────────────
 \tcbset{
     finding/.style={
         breakable,
@@ -314,11 +398,8 @@ def _render_tex(
 \pagenumbering{gobble}
 """
 
-    # ── Cover page ────────────────────────────────────────────────────────────
+    # Cover page
     tex += r"""
-% ════════════════════════════════════════════════════════════════════
-%  COVER PAGE
-% ════════════════════════════════════════════════════════════════════
 \begin{titlepage}
 \centering
 \vspace*{2cm}
@@ -334,13 +415,11 @@ def _render_tex(
 \textbf{API Type}    & """ + _esc(api_type) + r""" \\[4pt]
 \textbf{Scan Date}   & """ + _esc(scan_date) + r""" \\[4pt]
 \textbf{Author}      & """ + _esc(author) + r""" \\[4pt]
-\textbf{Tool}        & APISec v1.0 — REST $\cdot$ GraphQL $\cdot$ SOAP \\
+\textbf{Tool}        & APISec v1.0 --- REST $\cdot$ GraphQL $\cdot$ SOAP \\
 \end{tabular}
 \end{tcolorbox}
 
 \vspace{2em}
-
-% Risk badge
 """
 
     risk_color_map = {
@@ -363,7 +442,6 @@ def _render_tex(
 
 \vspace{2em}
 
-% Severity summary table
 \begin{tabular}{ccccc}
 """
 
@@ -384,16 +462,15 @@ def _render_tex(
             r"\centering{\fontsize{6}{7}\selectfont\bfseries " + sev + r"}\\[2pt]{\large\bfseries\color{" +
             color + r"} " + str(count) + r"}\end{tcolorbox} & "
         )
-    # Remove last " & " and close tabular
     tex = tex.rstrip(" & \n") + r""" \\
 \end{tabular}
 
 \vfill
-{\small\color{gray} Generated by APISec — Automated API Security Audit Tool}
+{\small\color{gray} Generated by APISec --- Automated API Security Audit Tool}
 \end{titlepage}
 """
 
-    # ── TOC ───────────────────────────────────────────────────────────────────
+    # TOC
     tex += r"""
 \pagenumbering{roman}
 \tableofcontents
@@ -401,7 +478,7 @@ def _render_tex(
 \pagenumbering{arabic}
 """
 
-    # ── Chapter 1 — Executive Summary ─────────────────────────────────────────
+    # Chapter 1 — Executive Summary
     tex += r"""
 \chapter{Executive Summary}
 
@@ -426,7 +503,7 @@ Total Findings & """ + str(stats["total"]) + r""" \\
     if api_type == "GraphQL" and (n_queries or n_muts):
         tex += (
             r"Queries Tested  & " + str(n_queries) + r" \\" + "\n"
-            r"Mutations Tested & " + str(n_muts)   + r" \\" + "\n"
+            r"Mutations Tested & " + str(n_muts) + r" \\" + "\n"
         )
 
     tex += r"""
@@ -477,7 +554,7 @@ with a composite risk score of \textbf{""" + str(stats["risk"]) + r"""}.
             r"as they may allow complete API compromise or data exfiltration." + "\n\n"
         )
 
-    # ── Chapter 2 — Methodology ───────────────────────────────────────────────
+    # Chapter 2 — Methodology
     tex += r"""
 \chapter{Methodology}
 
@@ -487,43 +564,23 @@ APISec follows a structured black-box testing methodology aligned with the
 OWASP API Security Testing Guide. The audit is conducted in three phases:
 
 \begin{enumerate}[leftmargin=2em]
-  \item \textbf{Discovery} — Automated detection of API type (REST, GraphQL, SOAP),
+  \item \textbf{Discovery} --- Automated detection of API type (REST, GraphQL, SOAP),
         endpoint enumeration via wordlist crawling, and schema extraction
         (Swagger/OpenAPI, GraphQL introspection, WSDL).
 
-  \item \textbf{Scanning} — Active vulnerability testing against discovered endpoints,
+  \item \textbf{Scanning} --- Active vulnerability testing against discovered endpoints,
         applying test cases mapped to OWASP API Top 10 categories.
 
-  \item \textbf{Reporting} — Structured output with severity classification,
+  \item \textbf{Reporting} --- Structured output with severity classification,
         OWASP/CWE mapping, evidence, and remediation guidance.
 \end{enumerate}
 
 \section{OWASP API Security Top 10 Coverage}
 
-\begin{center}
-\begin{tabular}{lll}
-\toprule
-\rowcolor{TableHeader}
-\textcolor{white}{\textbf{ID}} &
-\textcolor{white}{\textbf{Category}} &
-\textcolor{white}{\textbf{Test Coverage}} \\
-\midrule
-API1  & Broken Object Level Authorization   & IDOR, GraphQL query enumeration \\
-API2  & Broken Authentication               & JWT attacks, token bypass \\
-API3  & Broken Object Property Level Auth   & Mass assignment, field exposure \\
-API4  & Unrestricted Resource Consumption   & Depth/alias/batch attacks \\
-API5  & Broken Function Level Authorization & BFLA, mutation auth bypass \\
-API6  & Unrestricted Access to Sensitive    & Sensitive data in responses \\
-API7  & Server Side Request Forgery         & SSRF via URL parameters \\
-API8  & Security Misconfiguration           & CORS, headers, introspection \\
-API9  & Improper Inventory Management       & Exposed docs, debug endpoints \\
-API10 & Unsafe Consumption of APIs          & Injection (SQLi, NoSQLi, XSS) \\
-\bottomrule
-\end{tabular}
-\end{center}
 """
+    tex += _render_owasp_table(findings)
 
-    # ── Chapter 3 — Detailed Findings ─────────────────────────────────────────
+    # Chapter 3 — Detailed Findings
     tex += r"""
 \chapter{Detailed Findings}
 
@@ -532,7 +589,6 @@ ordered by severity.
 
 """
 
-    # Group by severity
     grouped: dict[str, list[dict]] = {s: [] for s in _SEV_ORDER}
     for f in findings:
         sev = f.get("severity", "INFO").upper()
@@ -557,14 +613,14 @@ ordered by severity.
             endpoint  = _esc_url(f.get("endpoint", "N/A"))
             method    = _esc(f.get("method",    "N/A"))
             parameter = _esc(f.get("parameter") or "N/A")
-            payload   = f.get("payload")   or ""
+            payload   = _sanitize(f.get("payload") or "")
             evidence  = _esc(f.get("evidence",  "N/A"))
             desc      = _esc(f.get("description", ""))
             solution  = _esc(f.get("solution",    ""))
             owasp     = _esc(f.get("owasp",  "N/A"))
             cwe       = _esc(f.get("cwe",    "N/A"))
             conf      = _esc(f.get("confidence", "N/A"))
-            ref       = f.get("reference", "")
+            ref       = _sanitize(f.get("reference", ""))
 
             tex += (
                 r"\begin{tcolorbox}[finding, title={"
@@ -616,13 +672,13 @@ ordered by severity.
             if ref:
                 tex += (
                     r"\medskip\textbf{Reference:} \url{"
-                    + ref.replace("%", r"\%") + r"}" + "\n"
+                    + ref + r"}" + "\n"
                 )
 
             tex += r"\end{tcolorbox}" + "\n\n"
             finding_num += 1
 
-    # ── Chapter 4 — Recommendations ───────────────────────────────────────────
+    # Chapter 4 — Recommendations
     tex += r"""
 \chapter{Recommendations}
 
@@ -676,10 +732,10 @@ in order of priority:
 \end{itemize}
 """
 
-    # ── Appendix ──────────────────────────────────────────────────────────────
+    # Appendix
     tex += r"""
-\chapter*{Appendix — Vulnerability Reference}
-\addcontentsline{toc}{chapter}{Appendix — Vulnerability Reference}
+\chapter*{Appendix --- Vulnerability Reference}
+\addcontentsline{toc}{chapter}{Appendix --- Vulnerability Reference}
 
 \begin{center}
 \begin{longtable}{llll}
@@ -736,12 +792,6 @@ taking remediation actions.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _compile_pdf(tex_source: str, output_path: str) -> bool:
-    """
-    Write tex_source to a temp file, compile twice with pdflatex,
-    then move the result to output_path.
-
-    Two passes are needed for correct TOC page numbers.
-    """
     import shutil
 
     pdflatex = shutil.which("pdflatex")
@@ -765,27 +815,17 @@ def _compile_pdf(tex_source: str, output_path: str) -> bool:
             tex_path,
         ]
 
-        # Two passes for TOC
         for pass_num in range(2):
             result = subprocess.run(
                 cmd,
                 capture_output = True,
                 text           = True,
-                # FIX — force UTF-8 decoding of pdflatex's stdout/stderr instead
-                # of relying on the system's default locale encoding. Without
-                # this, any non-ASCII character surfacing in pdflatex's console
-                # output (e.g. from a finding's evidence/payload echoed back in
-                # an error message) raised:
-                #   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe2 ...
-                # `errors="replace"` guarantees this call never crashes the
-                # report generation pipeline, even on a malformed byte.
                 encoding       = "utf-8",
                 errors         = "replace",
                 timeout        = 120,
                 cwd            = tmpdir,
             )
             if result.returncode != 0 and pass_num == 1:
-                # Show last 20 lines of log for debugging
                 log_file = os.path.join(tmpdir, "report.log")
                 if os.path.isfile(log_file):
                     with open(log_file, "r", encoding="utf-8", errors="replace") as lf:
@@ -812,29 +852,15 @@ def generate_report(
     scan_results_path:  str,
     output_path:        str,
     discovery_path:     Optional[str] = None,
-    author:             str           = "APISec Audit Tool — Automation of API Security Audit",
+    author:             str           = "APISec Audit Tool --- Automation of API Security Audit",
 ) -> str:
-    """
-    Generate a LaTeX-style PDF security report.
-
-    Args:
-        scan_results_path : path to scan_results.json
-        output_path       : destination PDF path
-        discovery_path    : path to endpoints.json (optional — for target info)
-        author            : report author name (default: Security Analyst)
-
-    Returns:
-        Absolute path to the generated PDF.
-    """
     findings  = _load_scan_results(scan_results_path)
     discovery = _load_discovery(discovery_path)
-    scan_date = datetime.now().strftime("%B %d, %Y — %H:%M")
+    scan_date = datetime.now().strftime("%B %d, %Y --- %H:%M")
 
     if not findings:
         raise ValueError(f"No findings found in '{scan_results_path}'.")
 
-    # Auto-detect target URL and API type from scan results
-    # if discovery file not provided or missing fields
     if not discovery.get("target_url") and findings:
         from urllib.parse import urlparse
         first_ep = findings[0].get("endpoint", "")
