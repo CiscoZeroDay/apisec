@@ -44,10 +44,56 @@ _SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 #  LaTeX escaping
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _esc(text: str) -> str:
-    """Escape special LaTeX characters in plain text."""
+# Characters that are valid Python/Unicode but break LaTeX's UTF-8 parser
+# (inputenc) when they show up raw in the .tex source: smart quotes, dashes,
+# control characters, and any other Windows-1252/Latin-1 leftovers that can
+# end up in scan evidence/payloads scraped from a live target. We normalize
+# the common "smart" punctuation to plain ASCII equivalents, then strip
+# anything else outside the safe printable range.
+_SMART_CHAR_MAP = {
+    "\u2018": "'",   # left single quote
+    "\u2019": "'",   # right single quote
+    "\u201c": '"',   # left double quote
+    "\u201d": '"',   # right double quote
+    "\u2013": "-",   # en dash
+    "\u2014": "--",  # em dash
+    "\u2026": "...", # ellipsis
+    "\u00a0": " ",   # non-breaking space
+}
+
+# Matches C0/C1 control characters (incl. stray bytes like 0x94, 0x91...)
+# that are not valid standalone UTF-8 and crash pdflatex's inputenc parser.
+_CONTROL_CHAR_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]"
+)
+
+
+def _sanitize(text: str) -> str:
+    """
+    Normalize/strip characters that are valid in Python strings but invalid
+    or unsafe for raw insertion into a LaTeX source file.
+
+    Must run BEFORE any LaTeX escaping (_esc / _esc_url / _verbatim) so that
+    every text field — including ones already partially encoded/decoded with
+    errors="replace" upstream — is guaranteed clean before reaching pdflatex.
+    """
     if not text:
         return ""
+    text = str(text)
+    for bad, good in _SMART_CHAR_MAP.items():
+        text = text.replace(bad, good)
+    # Drop the Unicode replacement character (from errors="replace" upstream)
+    # and any remaining control bytes that are not valid standalone UTF-8.
+    text = text.replace("\ufffd", "")
+    text = _CONTROL_CHAR_RE.sub("", text)
+    return text
+
+
+def _esc(text: str) -> str:
+    """Sanitize then escape special LaTeX characters in plain text."""
+    if not text:
+        return ""
+    text = _sanitize(text)
     replacements = [
         ("\\", r"\textbackslash{}"),
         ("&",  r"\&"),
@@ -68,9 +114,10 @@ def _esc(text: str) -> str:
 
 
 def _esc_url(url: str) -> str:
-    """Escape URL for LaTeX — allow line breaks at / and - characters."""
+    """Sanitize then escape URL for LaTeX — allow line breaks at / and - characters."""
     if not url:
         return ""
+    url = _sanitize(url)
     # Insert zero-width break hints after / and - so LaTeX can wrap the URL
     escaped = url.replace("%", r"\%").replace("#", r"\#").replace("_", r"\_")
     # Insert \allowbreak after each / and . for natural line-breaking
@@ -79,11 +126,11 @@ def _esc_url(url: str) -> str:
 
 
 def _verbatim(text: str) -> str:
-    """Wrap text in a LaTeX verbatim-safe box."""
+    """Sanitize and wrap text in a LaTeX verbatim-safe box."""
     if not text:
         return r"\textit{N/A}"
     # Use \texttt with manual escaping for inline display
-    cleaned = text.replace("\n", " ").replace("\r", "")[:300]
+    cleaned = _sanitize(text).replace("\n", " ").replace("\r", "")[:300]
     return r"\texttt{" + _esc(cleaned) + r"}"
 
 
