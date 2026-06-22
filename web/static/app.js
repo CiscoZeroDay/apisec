@@ -113,7 +113,7 @@ const TESTS_BY_TYPE = {
                "SENS — Private keys & certificates in responses"],
     },
     {
-      value: "bfla",
+      value: "bflaw",
       name:  "Broken Function Level Auth",
       owasp: "API5",
       checks: ["BFLA-001 — HTTP method tampering (GET→POST/PUT/DELETE)",
